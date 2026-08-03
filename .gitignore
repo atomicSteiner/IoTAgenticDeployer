@@ -1,0 +1,27 @@
+# --- Project Specific ---
+src/iot_agentic_deployer/.env
+.langgraph_api/
+
+# --- Python & Packaging ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Testing, Linting & Type Checking ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- JetBrains (IntelliJ IDEA / PyCharm) ---
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# --- OS / Environment ---
+.DS_Store
+.env
