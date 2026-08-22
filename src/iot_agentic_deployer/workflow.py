@@ -1,20 +1,38 @@
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage
+"""Orchestration graph (thesis 5.5).
 
-from iot_agentic_deployer.clients.thingsboard_client import ThingsBoardClient
-from iot_agentic_deployer.state import IoTDeploymentState
-from iot_agentic_deployer.nodes.intent import OrchestratorNode
-from iot_agentic_deployer.nodes.deployment_agent_node import DeploymentAgentNode
-from iot_agentic_deployer.nodes.iot_retreival_node import IoTRetrievalNode
+The supervisor and the specialised agents as nodes of a stateful graph: this
+decides who runs when, and where the architect gets consulted. The flow goes
+in circles on purpose - asking for clarification, or validating, both send
+the activity back to a stage it has already been through (thesis 5.6.2) - and
+whatever was built up in the meantime survives the trip back.
+"""
+
 import os
-from dotenv import load_dotenv
-
 import sqlite3
+
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, StateGraph
+
+
+
+# Importing this runs its @register_adapter, which is what makes the platform
+# selectable by name through get_adapter/available_platforms.
+from iot_agentic_deployer.platforms import thingsboard  # noqa: F401
+
+
+from iot_agentic_deployer.agents.conceptualization import ConceptualisationNode
+from iot_agentic_deployer.agents.configuration import ConfigurationNode
+from iot_agentic_deployer.agents.deployment import DeploymentNode
+from iot_agentic_deployer.agents.summary import SummaryNode
+from iot_agentic_deployer.agents.supervisor import SupervisorNode
+from iot_agentic_deployer.agents.validation import ValidationNode
+from iot_agentic_deployer.domain.state import IoTDeploymentState
+
 
 class IoTAgenticWorkflow:
-    """Manages the configuration and compilation of the LangGraph workflow."""
 
     def __init__(self, db_path: str = "iot_agentic.db"):
         load_dotenv()
@@ -22,31 +40,35 @@ class IoTAgenticWorkflow:
             base_url="https://openrouter.ai/api/v1",
             model=os.getenv("OPENAI_MODEL"),
             api_key=os.getenv("OPENAI_API_KEY"),
+            # Everything we ask for is a routing decision, an intent, or a
+            # topology - a few thousand tokens at most. Leave this unset and
+            # the client asks for the model's full 65536-token ceiling every
+            # time, which OpenRouter refuses outright once the balance cannot
+            # cover it, even for a call that would have taken 200 tokens.
+            max_tokens=4096,
         )
 
-        # One ThingsBoard client, shared by every node that needs it.
-        self.tb_client = ThingsBoardClient()
-
-        # Persists every chat's full state (messages, next_node, dt_data, ...)
-        # per thread_id. This is what lets the UI offer "new chat" / "previous
-        # chats" without manually shuttling a state dict around anymore -
-        # LangGraph restores/saves it automatically on every .stream() call.
+        # Where the configuration lives: keeps the model and its checkpoints
+        # across steps, and across sessions (R7).
         conn = sqlite3.connect(db_path, check_same_thread=False)
         self.checkpointer = SqliteSaver(conn)
 
+        adapter_options = {"mcp_url": os.getenv("THINGSBOARD_MCP_URL",
+                                                "http://localhost:8000/sse")}
 
-        # Single source of truth for what's in the graph.
-        # To add a node: add one line here. Nothing else needs to change -
-        # the Orchestrator's valid routing targets are derived from these
-        # keys too, so the prompt can never drift out of sync with the graph.
-        operational_nodes = {
-            "IoTRetrievalNode": IoTRetrievalNode(self.tb_client),
-            "DeploymentAgent": DeploymentAgentNode(self.tb_client),
+        # The one list of specialised agents. The routing map, the edges back
+        # to the supervisor, and the destinations it is allowed to pick all
+        # come from this dictionary.
+        self.agents = {
+            "Conceptualisation": ConceptualisationNode(llm=self.llm),
+            "Configuration": ConfigurationNode(llm=self.llm),
+            "Summary": SummaryNode(),
+            "Validation": ValidationNode(),
+            "Deployment": DeploymentNode(adapter_options=adapter_options),
         }
-
         self.nodes = {
-            "Orchestrator": OrchestratorNode(llm=self.llm, valid_destinations=list(operational_nodes.keys())),
-            **operational_nodes,
+            "Supervisor": SupervisorNode(llm=self.llm, valid_destinations=list(self.agents)),
+            **self.agents,
         }
 
         self.workflow = StateGraph(IoTDeploymentState)
@@ -58,67 +80,45 @@ class IoTAgenticWorkflow:
         for name, node in self.nodes.items():
             self.workflow.add_node(name, node)
 
-    def _deterministic_router(self, state: IoTDeploymentState) -> str:
-        """Reads the state and routes the flow generated by the Orchestrator."""
+    def _router(self, state: IoTDeploymentState) -> str:
         destination = state.get("next_node", "WaitUser")
         return END if destination == "WaitUser" else destination
 
     def _setup_edges(self):
-        self.workflow.set_entry_point("Orchestrator")
-
-        # Every node except the Orchestrator is an "operational" node:
-        # the Orchestrator can route to it, and it always returns control
-        # to the Orchestrator afterwards.
-        operational_nodes = [name for name in self.nodes if name != "Orchestrator"]
-
-        routing_map = {name: name for name in operational_nodes}
+        self.workflow.set_entry_point("Supervisor")
+        routing_map = {name: name for name in self.agents}
         routing_map[END] = END
+        self.workflow.add_conditional_edges("Supervisor", self._router, routing_map)
+        for name in self.agents:
+            self.workflow.add_edge(name, "Supervisor")
 
-        self.workflow.add_conditional_edges("Orchestrator", self._deterministic_router, routing_map)
+    # -- session API ------------------------------------------------------
 
-        for name in operational_nodes:
-            self.workflow.add_edge(name, "Orchestrator")
+    def _config(self, session_id: str) -> dict:
+        return {"configurable": {"thread_id": session_id}}
 
-    def run_turn(self, thread_id: str, user_input: str) -> str:
-        """Runs one turn of a given chat and returns the assistant's reply.
+    def run_turn(self, session_id: str, user_input: str) -> str:
+        final = None
+        for event in self.system.stream(
+            {"messages": [HumanMessage(content=user_input)]},
+            config=self._config(session_id), stream_mode="values",
+        ):
+            final = event
+        return final["messages"][-1].content
 
-        Only the new message is passed in - the checkpointer restores the
-        rest of that thread's state automatically and saves the updated
-        state back under the same thread_id.
-        """
-        config = {"configurable": {"thread_id": thread_id}}
-        final_state = None
-        for event in self.system.stream({"messages": [HumanMessage(content=user_input)]}, config=config,
-                                        stream_mode="values"):
-            final_state = event
-        return final_state["messages"][-1].content
+    def confirm_plan(self, session_id: str) -> None:
+        """Notes that the architect confirmed. Going from planning to actually
+        doing it is a step they take deliberately (thesis 5.4)."""
+        self.system.update_state(self._config(session_id), {"plan_confirmed": True})
 
-    def get_history(self, thread_id: str) -> list:
-        """Returns the message history for a given chat (empty if it's new)."""
-        config = {"configurable": {"thread_id": thread_id}}
-        snapshot = self.system.get_state(config)
-        if snapshot and snapshot.values:
-            return snapshot.values.get("messages", [])
-        return []
-    
-    def get_dt_data(self, thread_id: str) -> list:
-        """Returns the latest retrieved device data for a given chat (empty if none yet)."""
-        config = {"configurable": {"thread_id": thread_id}}
-        snapshot = self.system.get_state(config)
-        if snapshot and snapshot.values:
-            return snapshot.values.get("dt_data", [])
-        return []
+    def get_state_values(self, session_id: str) -> dict:
+        snapshot = self.system.get_state(self._config(session_id))
+        return snapshot.values if snapshot else {}
 
-    def run(self):
-        """Starts an interactive CLI session (single, ad-hoc chat)."""
-        print("\n--- Starting Agentic IoT Session (Type 'exit' to quit) ---")
-        thread_id = "cli-session"
+    def get_history(self, session_id: str) -> list:
+        return self.get_state_values(session_id).get("messages", [])
 
-        while True:
-            user_input = input("\nOperator: ")
-            if user_input.lower() in ['exit', 'quit']:
-                break
-
-            reply = self.run_turn(thread_id, user_input)
-            print(f"\nSystem: {reply}")
-
+    def delete_session(self, session_id: str) -> None:
+        """Throws a configuration away for good - model, history and
+        checkpoints. No undo, so the UI asks first."""
+        self.checkpointer.delete_thread(session_id)

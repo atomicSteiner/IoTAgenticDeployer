@@ -1,0 +1,154 @@
+# Device catalogue (thesis 5.2, Table 5.2).
+# Externalised declarative knowledge base: the behaviour of the system can be
+# extended to new equipment by editing this file, without modifying source
+# code (requirement R4).
+#
+# `default_metadata` provides a provisional value for each entry of
+# `required_metadata`, so that an assignment produces a device that is
+# complete enough to deploy instead of one that validation can only reject.
+# The values are declared here rather than in code, for the same reason as
+# the rest of the catalogue (R4). They are never applied silently: the
+# configuration agent reports every field it defaulted, and the architect can
+# override any of them, so a default remains a starting point rather than a
+# decision taken on their behalf (thesis 5.3, R2).
+#
+# `aliases` carries only vocabulary that the rest of the entry cannot already
+# express. What an architect asks for is usually a measurement rather than a
+# product ("a temperature sensor", "something for CO2"), and that is already
+# stated in `telemetry_model` and `capabilities`, which the configuration
+# agent matches against directly - so those words are deliberately absent
+# here. Aliases are for the words no field implies: trade names, informal
+# terms and spelling variants ("thermometer", "seismic sensor", "multi
+# sensor").
+#
+# Placeholders, substituted from the model at assignment time:
+#   {building} {floor} {space} {access_point}  names from the topology
+#   {gateway}                                  the gateway device serving the
+#                                              installation; unresolved when
+#                                              none exists, in which case the
+#                                              field is left unset and
+#                                              validation still reports it.
+
+devices:
+
+  - device_type_id: dipme.monitoring_safety_multisensor
+    display_name: DIPME Monitoring & Safety Multisensor
+    category: multisensor
+    capabilities: [environmental_monitoring, structural_warning, commandable_mode]
+    aliases: [multi sensor, combined sensor]
+    installation_target: space
+    compatible_space_types:
+      [classroom, office, laboratory, meeting_room, corridor, technical_room, common_area]
+    required_metadata: [physical_label, pan_id, gateway_id]
+    default_metadata:
+      physical_label: "{space} multisensor"
+      pan_id: "0x1A2B"
+      gateway_id: "{gateway}"
+    telemetry_model: [temperature, humidity, co2, pressure, acceleration]
+    command_model: [set_mode, trigger_selftest]
+    platform_mapping:
+      thingsboard: {entity: device, profile: multisensor, type: multisensor}
+      openremote:  {entity: asset, asset_type: PresenceSensorAsset}
+
+  - device_type_id: generic.environmental_sensor
+    display_name: Environmental Sensor
+    category: generic_sensor
+    capabilities: [environmental_monitoring]
+    aliases: [thermometer, climate sensor, air quality sensor, ambient sensor]
+    installation_target: space
+    compatible_space_types:
+      [classroom, office, laboratory, meeting_room, common_area, outdoor]
+    required_metadata: [physical_label, gateway_id]
+    default_metadata:
+      physical_label: "{space} environmental sensor"
+      gateway_id: "{gateway}"
+    telemetry_model: [temperature, humidity, co2]
+    command_model: []
+    platform_mapping:
+      thingsboard: {entity: device, profile: default, type: environmental_sensor}
+      openremote:  {entity: asset, asset_type: EnvironmentSensorAsset}
+
+  - device_type_id: dipme.people_counter
+    display_name: People Counter
+    category: people_counter
+    capabilities: [presence_detection, occupancy_counting]
+    aliases: [footfall counter, headcount sensor, turnstile counter]
+    installation_target: access_point
+    compatible_space_types: [classroom, office, laboratory, meeting_room, common_area]
+    required_metadata: [physical_label, access_direction, gateway_id]
+    default_metadata:
+      physical_label: "{access_point} counter"
+      access_direction: bidirectional
+      gateway_id: "{gateway}"
+    telemetry_model: [count_in, count_out, occupancy]
+    command_model: [reset_counter]
+    platform_mapping:
+      thingsboard: {entity: device, profile: default, type: people_counter}
+      openremote:  {entity: asset, asset_type: PeopleCounterAsset}
+
+  - device_type_id: dipme.structural_early_warning
+    display_name: Structural Early-Warning Device
+    category: early_warning
+    capabilities: [structural_warning]
+    aliases: [seismic sensor, earthquake sensor, accelerometer, shake sensor]
+    installation_target: structural_location
+    compatible_space_types: [technical_room, corridor, common_area, laboratory, classroom, office]
+    required_metadata: [physical_label, gateway_id]
+    default_metadata:
+      physical_label: "{space} early-warning"
+      gateway_id: "{gateway}"
+    telemetry_model: [vibration, displacement, alarm_state]
+    command_model: [arm, disarm]
+    platform_mapping:
+      thingsboard: {entity: device, profile: default, type: early_warning}
+      openremote:  {entity: asset, asset_type: VibrationSensorAsset}
+
+  - device_type_id: dipme.edge_gateway
+    display_name: Edge Gateway
+    category: gateway
+    capabilities: []
+    aliases: [concentrator, field gateway]
+    installation_target: technical_room
+    compatible_space_types: [technical_room, common_area, corridor]
+    required_metadata: [physical_label, pan_id]
+    default_metadata:
+      physical_label: "{space} gateway"
+      pan_id: "0x1A2B"
+    telemetry_model: [uptime, connected_devices]
+    command_model: [reboot]
+    platform_mapping:
+      thingsboard: {entity: device, profile: default, type: gateway, is_gateway: true}
+      openremote:  {entity: asset, asset_type: GatewayAsset}
+
+  - device_type_id: dipme.coordinator
+    display_name: Network Coordinator
+    category: coordinator
+    capabilities: []
+    aliases: [zigbee coordinator, mesh coordinator]
+    installation_target: technical_room
+    compatible_space_types: [technical_room]
+    required_metadata: [physical_label, pan_id]
+    default_metadata:
+      physical_label: "{space} coordinator"
+      pan_id: "0x1A2B"
+    telemetry_model: [uptime]
+    command_model: []
+    platform_mapping:
+      thingsboard: {entity: device, profile: default, type: coordinator}
+      openremote:  {entity: asset, asset_type: GatewayAsset}
+
+  - device_type_id: generic.ups
+    display_name: Uninterruptible Power Supply
+    category: generic_sensor
+    capabilities: []
+    aliases: [battery backup, power backup, backup power]
+    installation_target: technical_room
+    compatible_space_types: [technical_room]
+    required_metadata: [physical_label]
+    default_metadata:
+      physical_label: "{space} UPS"
+    telemetry_model: [battery_level, mains_present]
+    command_model: []
+    platform_mapping:
+      thingsboard: {entity: device, profile: default, type: ups}
+      openremote:  {entity: asset, asset_type: ElectricityStorageAsset}

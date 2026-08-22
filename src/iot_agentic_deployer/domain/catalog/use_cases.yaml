@@ -1,0 +1,56 @@
+# Use-case profiles (thesis 4.1 Table 4.2, 5.2).
+# A profile associates a scenario with the device categories it recommends,
+# the metadata it makes mandatory and the rules that determine when an
+# installation of that kind is complete.
+
+use_cases:
+
+  wellness:
+    display_name: Wellness
+    description: >
+      Ordinary monitoring of environmental conditions and occupancy patterns
+      in occupied spaces.
+    typical_space_types: [classroom, office, laboratory, meeting_room]
+    recommended_devices:
+      - generic.environmental_sensor
+      - dipme.monitoring_safety_multisensor
+      - dipme.people_counter
+      - dipme.edge_gateway
+    rules:
+      require_gateway: true
+      # "at least one environmental monitoring source in every selected space"
+      require_capability_per_selected_space: environmental_monitoring
+      # "admits people counters only where an access point has been modelled"
+      people_counter_requires_access_point: true
+      require_full_coverage: false
+
+  seismic_safety:
+    display_name: Seismic safety
+    description: >
+      Preparedness and emergency-oriented monitoring in seismic-risk contexts.
+    typical_space_types: [classroom, office, laboratory, corridor, technical_room]
+    recommended_devices:
+      - dipme.monitoring_safety_multisensor
+      - dipme.structural_early_warning
+      - dipme.people_counter
+      - dipme.edge_gateway
+      - generic.ups
+    rules:
+      require_gateway: true
+      # "requires an early-warning source, or an explicit and documented exclusion"
+      require_capability_per_selected_space: structural_warning
+      capability_exclusion_admitted: true
+      # "the association of every safety device with a space"
+      require_space_association_for_all_devices: true
+      require_full_coverage: true
+      people_counter_requires_access_point: true
+
+  general:
+    display_name: General installation
+    description: >
+      Open scenario in which the architect places catalogue devices directly.
+    typical_space_types: []
+    recommended_devices: []      # empty = the whole catalogue is admissible
+    rules:
+      require_gateway: true
+      require_space_association_for_all_devices: true

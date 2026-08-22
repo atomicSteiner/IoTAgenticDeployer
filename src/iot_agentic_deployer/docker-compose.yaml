@@ -1,0 +1,16 @@
+services:
+
+  mcp-server:
+    image: thingsboard/mcp
+    container_name: thingsboard-mcp
+    restart: unless-stopped
+    environment:
+      - THINGSBOARD_URL=http://host.docker.internal:9090
+      - THINGSBOARD_USERNAME=tenant@thingsboard.org
+      - THINGSBOARD_PASSWORD=tenant
+      - SPRING_AI_MCP_SERVER_STDIO=false
+      - SPRING_WEB_APPLICATION_TYPE=servlet
+      - HTTP_BIND_ADDRESS=0.0.0.0
+      - JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true
+    ports:
+      - "8000:8000"
