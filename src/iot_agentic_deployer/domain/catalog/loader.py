@@ -1,4 +1,4 @@
-"""Reads the device catalogue and the use-case profiles off disk (R4)."""
+"""Reads the device catalogue and the use-case profiles off disk"""
 
 from functools import lru_cache
 from pathlib import Path
@@ -30,7 +30,7 @@ def profile_rules(use_case: str | None) -> dict:
 def devices_for_use_case(use_case: str | None) -> list[dict]:
     """Limits what the system is allowed to suggest, so proposals come from
     equipment that actually exists rather than from whatever the language
-    model happens to remember (thesis 5.2)."""
+    model happens to remember"""
     catalog = load_device_catalog()
     if not use_case:
         return list(catalog.values())

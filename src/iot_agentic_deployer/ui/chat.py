@@ -53,8 +53,7 @@ def _save_sessions_index(index: dict):
 @st.cache_resource
 def get_workflow() -> IoTAgenticWorkflow:
     """Builds the graph once and reuses it for every session. The only
-    per-session thing is the configuration itself, and that lives in the
-    checkpointer, not here."""
+    per-session thing is the configuration itself, and that lives in the checkpointer"""
     return IoTAgenticWorkflow()
 
 
@@ -63,7 +62,7 @@ class IoTDeploymentUI:
 
     A session is just a `thread_id`. The checkpointer holds its whole
     configuration, so all this class keeps is which session is open and a
-    small index of titles for the sidebar (R7).
+    small index of titles for the sidebar.
     """
 
     def __init__(self, page_title: str = "IoT Agentic Deployer", icon: str = "⚙️"):
@@ -71,9 +70,11 @@ class IoTDeploymentUI:
         self.icon = icon
         st.set_page_config(page_title=self.page_title, page_icon=self.icon, layout="wide")
         self.workflow = get_workflow()
+        self._cached_values = None
 
     # -- session handling -------------------------------------------------
 
+    #select the most recent session or create a new one if there is no one
     def _initialize_state(self):
         if "sessions_index" not in st.session_state:
             st.session_state.sessions_index = _load_sessions_index()
@@ -110,6 +111,7 @@ class IoTDeploymentUI:
             else:
                 self._start_new_session()
 
+    #set the new title of the session
     def _maybe_set_title(self, session_id: str, first_message: str):
         meta = st.session_state.sessions_index[session_id]
         if meta["title"] == "New configuration":
@@ -121,7 +123,11 @@ class IoTDeploymentUI:
         return st.session_state.active_session_id
 
     def _values(self) -> dict:
-        return self.workflow.get_state_values(self._session)
+        # Streamlit rebuilds this class on every rerun, so the cache lasts
+        # all six panels see the same state,
+        if self._cached_values is None:
+            self._cached_values = self.workflow.get_state_values(self._session)
+        return self._cached_values
 
     def _installation(self) -> Installation:
         return Installation(**self._values().get("installation", {}))
@@ -139,10 +145,12 @@ class IoTDeploymentUI:
             if "confirm_delete_id" not in st.session_state:
                 st.session_state.confirm_delete_id = None
 
+            #sort the sessions
             ordered = sorted(
                 st.session_state.sessions_index.items(),
                 key=lambda kv: kv[1]["created_at"], reverse=True,
             )
+            #process every session to open them or delete if necessary
             for session_id, meta in ordered:
                 label = ("👉 " if session_id == self._session else "") + meta["title"]
                 col_open, col_delete = st.columns([5, 1])
@@ -154,7 +162,7 @@ class IoTDeploymentUI:
                     if st.button("🗑️", key=f"delete_{session_id}", use_container_width=True):
                         st.session_state.confirm_delete_id = session_id
                         st.rerun()
-
+                #if there is an id that is selected to be deleted
                 if st.session_state.confirm_delete_id == session_id:
                     st.caption(f"Delete '{meta['title']}'? This cannot be undone.")
                     col_confirm, col_cancel = st.columns(2)
@@ -174,7 +182,7 @@ class IoTDeploymentUI:
 
     def _render_status(self):
         """Which platform, and whether it is ready - so the architect can see
-        where things stand without running the check again."""
+        where things stand without running the check again"""
         values = self._values()
         inst = Installation(**values.get("installation", {}))
 
@@ -203,7 +211,7 @@ class IoTDeploymentUI:
     # -- main panels ------------------------------------------------------
 
     def _render_welcome(self):
-        if not self.workflow.get_history(self._session):
+        if not self._values().get("messages"):
             st.info(WELCOME)
 
     def _render_configuration(self):
@@ -213,7 +221,7 @@ class IoTDeploymentUI:
         if not inst.building:
             return
 
-        # Something for the jump button at the bottom of the page to aim at.
+        # Something for the jump button at the bottom of the page to aim at
         st.markdown('<div id="configuration-top"></div>', unsafe_allow_html=True)
 
         spaces = sum(1 for _ in inst.iter_spaces())
@@ -227,17 +235,6 @@ class IoTDeploymentUI:
             with diagram_tab:
                 diagram = installation_to_mermaid(inst)
                 if diagram:
-                    # This tab is the one that isn't showing when Streamlit
-                    # first draws the page, so its iframe is 0x0. Mermaid
-                    # measures as it renders, and rendering into nothing bakes
-                    # a degenerate viewBox - which is why the diagram came up
-                    # blank once you clicked over to it. Waiting until the
-                    # element has a real width means it draws at the size it
-                    # will actually be seen at.
-                    #
-                    # htmlLabels lets a label hold the two lines we build for
-                    # it; without it the <br/> is dropped and the name and the
-                    # type run together as "Classroom 1classroom".
                     components.html(
                         f"""
                         <div class="mermaid">{diagram}</div>
@@ -260,7 +257,7 @@ class IoTDeploymentUI:
 
     def _render_deployment_plan(self):
         """Going from planning to actually doing it is a deliberate step: the
-        plan is shown, and nothing runs until it is confirmed (thesis 5.4)."""
+        plan is shown, and nothing runs until it is confirmed."""
         values = self._values()
         plan = values.get("deployment_plan")
         if not plan:
@@ -297,7 +294,7 @@ class IoTDeploymentUI:
 
     def _execute_plan(self):
         """Notes the confirmation and re-enters the graph so the deployment
-        agent can get on with it."""
+        agent can get on with it"""
         with st.spinner("Executing the planned operations…"):
             self.workflow.confirm_plan(self._session)
             self._run_turn("I confirm the deployment plan. Execute it.")
@@ -310,9 +307,6 @@ class IoTDeploymentUI:
         try:
             return self.workflow.run_turn(self._session, user_input)
         except BaseExceptionGroup as eg:
-            # The MCP client runs on anyio task groups, which wrap the real
-            # error - on its own, str(eg) only says "unhandled errors in a
-            # TaskGroup", which helps nobody.
             st.error("Workflow error: " + "; ".join(
                 f"{type(sub).__name__}: {sub}" for sub in eg.exceptions))
             st.code(traceback.format_exc())
@@ -321,19 +315,15 @@ class IoTDeploymentUI:
             st.code(traceback.format_exc())
         return None
 
+    #render each history messages of the workflow
     def _render_history(self):
-        for msg in self.workflow.get_history(self._session):
+        for msg in self._values().get("messages", []):
             role = "user" if isinstance(msg, HumanMessage) else "assistant"
             with st.chat_message(role):
                 st.markdown(msg.content)
 
     def _render_jump_to_configuration(self):
-        """A way back up to the configuration panel without scrolling.
-
-        The table and the diagram sit above the whole conversation, so once a
-        few turns have gone by they are a long way off. This is a plain anchor
-        link rather than a Streamlit button: a button would have to rerun the
-        script to do anything, and a rerun cannot scroll the page."""
+        """A way back up to the configuration panel without scrolling."""
         if not self._installation().building:
             return
 
@@ -363,6 +353,7 @@ class IoTDeploymentUI:
             unsafe_allow_html=True,
         )
 
+    #this is the core of the interface interaction
     def _handle_user_interaction(self):
         user_input = st.chat_input(
             "Describe the building, choose devices, or ask for a summary…")
@@ -394,4 +385,5 @@ class IoTDeploymentUI:
         self._render_deployment_plan()
         self._render_history()
         self._render_jump_to_configuration()
+        #the input is the last one after all the graphical rendering
         self._handle_user_interaction()

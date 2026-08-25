@@ -1,10 +1,8 @@
-"""Validation engine (thesis 5.5, requirement R5).
+"""Validation engine
 
-Deliberately plain code: whether a configuration is complete and consistent
-is decided against the catalogue and the profile, never left to the language
-model (thesis 5.3, "Deterministic validation"). What comes out as missing
-here is also what conceptualisation turns into questions for the architect
-(R2).
+Plain code on purpose: completeness and consistency are decided against the
+catalogue and the profile, never left to the language model. What comes out
+as missing here is what conceptualisation turns into questions
 """
 from iot_agentic_deployer.domain.catalog.loader import load_device_catalog, load_use_cases, GATEWAY_CATEGORIES
 from iot_agentic_deployer.domain.models import Installation
@@ -29,9 +27,8 @@ class Finding:
 # ---------------------------------------------------------- topology rules
 
 def check_topology(inst: Installation) -> list[Finding]:
-    """The bare minimum a topology has to satisfy (thesis 5.1): a building
-    needs at least one floor, a floor at least one space, and every space
-    needs a type from the controlled vocabulary."""
+    """The bare minimum: a building needs a floor, a floor needs a space,
+    and every space needs a type from the controlled vocabulary"""
     findings = []
 
     if not inst.building:
@@ -127,8 +124,7 @@ def _check_profile(inst: Installation) -> list[Finding]:
             "error", "No gateway or coordinator is present in the installation.",
             "gateway_present"))
 
-    # A capability every selected space needs - unless the profile allows a
-    # documented exclusion (thesis 5.6.2).
+    # A capability every selected space needs, unless excluded on the record
     needed = rules.get("require_capability_per_selected_space")
     if needed:
         for floor, space in inst.iter_spaces():
@@ -191,8 +187,8 @@ def validate_installation(inst: Installation) -> dict:
 
 
 def missing_topology_information(inst: Installation) -> list[str]:
-    """What conceptualisation still has to ask about. Comes from the topology
-    rules, not from the model's own opinion (R2)."""
+    """What conceptualisation still has to ask about: from the topology
+    rules, not from the model's own opinion"""
     questions = []
     for f in check_topology(inst):
         if f.rule == "building_present":

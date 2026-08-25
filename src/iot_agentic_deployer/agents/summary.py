@@ -1,4 +1,4 @@
-"""Summary agent (thesis 5.4): shows the configuration so far as a table and
+"""Summary agent: shows the configuration so far as a table and
 a diagram, both read straight off the model."""
 
 

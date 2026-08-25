@@ -1,4 +1,4 @@
-"""Supervisor (thesis 5.4).
+"""Supervisor
 
 Works out which stage of the activity the architect is asking for, hands off
 to it, and turns the result back into one reply. The only agent that talks to
@@ -48,13 +48,6 @@ class SupervisorNode:
 
     def __init__(self, llm, valid_destinations: list[str]):
         self.valid_destinations = valid_destinations
-        # Why function_calling rather than the default json_schema: json_schema
-        # is OpenAI's strict mode, which only really works if the backend
-        # constrains decoding token by token. OpenRouter routes this model
-        # through several providers and not all of them do - some just ask for
-        # JSON and hope. When one of those wanders off, it never closes the
-        # object and we hit the token cap instead (LengthFinishReasonError).
-        # Tool calls are supported far more evenly and end on their own.
         self.supervisor_llm = llm.with_structured_output(
             build_routing_decision(valid_destinations), method="function_calling")
 
@@ -95,9 +88,7 @@ class SupervisorNode:
     @staticmethod
     def _next_step_hint(state: IoTDeploymentState) -> Optional[str]:
         """One suggestion for what to do next, read straight off the stored
-        state like Model status is. No LLM call, so it costs nothing and
-        can't make things up. A wrong hint would be worse than no hint at
-        all, and this only has to be right - it doesn't have to be elegant."""
+        state like Model status is"""
         inst = Installation(**(state.get("installation") or {}))
 
         if not inst.building:
@@ -129,12 +120,7 @@ class SupervisorNode:
         history = state["messages"]
 
         # If the last message is an agent's rather than the architect's, an
-        # agent has just run and we're on the way back, still inside the same
-        # turn - nobody has asked for anything new. Stop here in code rather
-        # than asking the LLM whether to carry on into another stage. Left to
-        # decide, it chained into stages nobody had asked for and spent an
-        # extra call retelling a result the agent had already given. The
-        # rule-based hint below fills that silence for free.
+        # agent has just run and we're on the way back
         if history and not isinstance(history[-1], HumanMessage):
             result = {
                 "next_node": "WaitUser",

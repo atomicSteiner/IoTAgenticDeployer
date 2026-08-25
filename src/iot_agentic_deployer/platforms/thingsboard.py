@@ -1,9 +1,8 @@
-"""ThingsBoard adapter (thesis 5.5, R6).
+"""ThingsBoard adapter
 
-Carries out the operations planning produced, against a real ThingsBoard,
-through the official ThingsBoard MCP server. Everything ThingsBoard-specific
-stops here - tool names, payload shapes, the various ways an id comes back -
-so nothing above has to know any of it.
+Carries out the operations planning produced, through the official
+ThingsBoard MCP server. Everything ThingsBoard-specific stops here (tool
+names, payload shapes, the ways an id comes back), so nothing above knows it
 """
 
 import json
@@ -17,9 +16,8 @@ CONTAINS = "Contains"
 
 
 class ThingsBoardError(RuntimeError):
-    """An operation the platform refused. Raised so realisation stops right
-    there with the reason attached, instead of marking it done and carrying
-    around an id that was never handed out."""
+    """An operation the platform refused. Raised so realisation stops there
+    with the reason, instead of marking it done with an id it never got"""
 
 
 @register_adapter
@@ -38,12 +36,10 @@ class ThingsBoardAdapter(PlatformAdapter):
 
     @staticmethod
     def _check(tool: str, result):
-        """The MCP tools do not fail when something goes wrong - they return
-        the problem. Sometimes as a dict with status ERROR, sometimes as a
-        bare string where an entity should have been ('400 on POST request
-        for ...'). Miss that and a refused operation gets marked completed
-        with None for an id, so each shape is turned back into an exception
-        here."""
+        """The MCP tools do not fail on error, they return the problem: a
+        dict with status ERROR, or a bare string where an entity should have
+        been. Miss it and a refused operation is marked completed with a
+        None id, so every shape becomes an exception here"""
         if isinstance(result, dict) and str(result.get("status", "")).upper() == "ERROR":
             raise ThingsBoardError(f"{tool}: {result.get('message') or result}")
         if isinstance(result, str):
@@ -79,10 +75,9 @@ class ThingsBoardAdapter(PlatformAdapter):
         return True, f"ThingsBoard reachable through the MCP server at {self.mcp_url}."
 
     def create_asset(self, name: str, asset_type: str) -> str:
-        # Devices get upserted, but a duplicate asset name is refused flat
-        # out. Reusing the existing one is what keeps a run resumable: stop
-        # halfway, confirm again, and it will not collide with the assets it
-        # created the first time round (R7).
+        # Devices get upserted, a duplicate asset name is refused. Reusing
+        # the existing one is what lets an interrupted run be confirmed again
+        # without colliding with the assets it already created
         existing = self._lookup("getTenantAsset", assetName=name)
         if existing:
             return existing["id"]["id"]
@@ -115,8 +110,7 @@ class ThingsBoardAdapter(PlatformAdapter):
         }))
 
     # -- reading ----------------------------------------------------------
-    # Nothing to do with provisioning - just for looking at what an
-    # installation ended up like on the platform.
+    # Not provisioning: just for looking at what ended up on the platform
 
     def get_all_devices(self) -> list:
         devices, page = [], 0

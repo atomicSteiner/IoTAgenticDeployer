@@ -5,18 +5,9 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
 class MCPToolClient:
-    """A thin wrapper around one or more MCP servers.
-
-    To add an integration beyond ThingsBoard, add an entry to `servers` -
-    nothing else changes.
-
-    One thing to be careful about: every call opens a fresh session, inside
-    the same event loop that made the call. MCP sessions, and the httpx/anyio
-    transport under them, belong to the loop that created them. Cache tool
-    objects across separate `asyncio.run()` calls and you end up reusing
-    things whose loop is long closed - which is exactly where the flaky
-    connection failures were coming from: a different error every time, none
-    of them reproducible.
+    """A thin wrapper around one or more MCP servers: to add an integration,
+    add an entry to `servers`
+    Every call opens a fresh session inside the loop that made it
     """
 
     def __init__(self, servers: dict):
@@ -24,11 +15,9 @@ class MCPToolClient:
 
     @staticmethod
     def _normalize(result):
-        """MCP hands results back as raw content blocks - something like
-        [{'type': 'text', 'text': '<json>', 'id': '...'}] - rather than the
-        payload itself. Pull the text out, then keep unwrapping while it is
-        still JSON in a string, so callers get real Python data instead of
-        MCP's envelope."""
+        """MCP returns content blocks, not the payload itself. Pull the text
+        out and keep unwrapping while it is still JSON in a string, so callers
+        get real Python data instead of the envelope"""
         if isinstance(result, list) and result and all(
             isinstance(item, dict) and item.get("type") == "text" for item in result
         ):
@@ -55,7 +44,6 @@ class MCPToolClient:
         return self._normalize(result)
 
     def call(self, tool_name: str, **kwargs):
-        """Blocking convenience wrapper. Fine for the one-call-at-a-time
-        nodes here; if they ever go async, call `acall` directly instead and
-        save re-listing the tools every time."""
+        """Blocking wrapper, fine for the one-call-at-a-time nodes here. If
+        they ever go async, call `acall` directly"""
         return asyncio.run(self.acall(tool_name, **kwargs))

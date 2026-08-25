@@ -1,4 +1,4 @@
-"""Deployment agent (thesis 5.4, 5.6.3).
+"""Deployment agent.
 
 Two phases, following the SAIBA split:
 
@@ -8,7 +8,7 @@ Two phases, following the SAIBA split:
 
 Execution can be picked up again where it left off: anything already done is
 not repeated, so one failure can be sorted out and retried without throwing
-away the work that succeeded (R7).
+away the work that succeeded
 """
 
 
@@ -33,13 +33,13 @@ class DeploymentNode:
         plan = [PlatformOperation(**op) for op in state.get("deployment_plan", [])]
         confirmed = state.get("plan_confirmed", False)
 
+        #there is a plan and confirmed
         if plan and confirmed:
             # What was confirmed is the plan the architect saw, not whatever
-            # the model says by now - the configuration may well have moved
-            # in between. So check the rules and re-derive the operations
+            # the model says by now.
+            # Still it's necessary to check the rules and re-derive the operations
             # against the model as it stands. _plan already works this way
-            # (thesis 5.4); it just has to hold here too, where the writing
-            # actually happens.
+            # it just has to hold here too, where the writing actually happens
             report = validate_installation(inst)
             if not report["deployable"]:
                 return {
@@ -57,6 +57,7 @@ class DeploymentNode:
 
             return self._realise(inst, plan)
 
+        #if there is no plan we formulate it
         if plan:
             return self._awaiting_confirmation(inst, plan)
         return self._plan(inst)
@@ -67,12 +68,9 @@ class DeploymentNode:
                                plan: list[PlatformOperation]) -> dict:
         """We're back at Deployment while a plan is still waiting.
 
-        Confirming is a step the architect takes deliberately (thesis 5.4),
+        Confirming is a step the architect takes deliberately,
         and it goes through the confirm control rather than through the
-        conversation. Re-deriving here would answer "execute it" by showing
-        the same plan over again - and worse, would wipe the record of what
-        had already run. So leave an unchanged plan alone and just say
-        what's waiting on them."""
+        conversation"""
         report = validate_installation(inst)
         if not report["deployable"]:
             return {
@@ -119,9 +117,9 @@ class DeploymentNode:
     def _carry_completed(previous: list[PlatformOperation],
                          current: list[PlatformOperation]) -> list[PlatformOperation]:
         """Because op_ids come from the model, anything created under an
-        earlier plan keeps the same identity in a freshly derived one - so
+        earlier plan keeps the same identity in a freshly derived one: so
         work that's already done carries over instead of being attempted
-        twice (R7)."""
+        twice"""
         completed = {op.op_id: op for op in previous if op.status == "completed"}
         for op in current:
             if op.op_id in completed:
@@ -156,8 +154,7 @@ class DeploymentNode:
     # -- behaviour planning ----------------------------------------------
 
     def _plan(self, inst: Installation) -> dict:
-        # Permission is established against the model as it stands now, not
-        # inherited from some earlier check (thesis 5.4).
+        # Permission via validation is established against the model as it stands now
         report = validate_installation(inst)
         if not report["deployable"]:
             return {
@@ -168,6 +165,7 @@ class DeploymentNode:
                 "trace": trace("Deployment", "plan_refused", "configuration not valid"),
             }
 
+        #then try to reach the platform
         adapter = get_adapter(inst.target.platform, **self.adapter_options)
         reachable, diagnostic = adapter.check_reachability()
         if not reachable:
@@ -178,12 +176,12 @@ class DeploymentNode:
                 "trace": trace("Deployment", "reachability_failed", diagnostic),
             }
 
+        #then derive the deployment plan
         plan = derive_plan(inst)
         return {
             "deployment_plan": [op.model_dump() for op in plan],
             # Record the check that let this plan through, not only the ones
-            # that block it - otherwise the architect is looking at an empty
-            # panel next to a plan that clearly passed something.
+            # that block it
             "validation_report": report,
             "plan_confirmed": False,
             "messages": [AIMessage(content=(
@@ -199,11 +197,12 @@ class DeploymentNode:
         adapter = get_adapter(inst.target.platform, **self.adapter_options)
 
         # Rebuild the reference table from what already completed, so a retry
-        # can still resolve entities created on an earlier run.
+        # can still resolve entities created on an earlier run
         refs = {op.op_id: op.result_ref for op in plan if op.status == "completed"}
         failure = None
 
         for op in plan:
+            #skip the completed operations
             if op.status == "completed":
                 continue
             try:

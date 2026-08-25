@@ -57,7 +57,7 @@ class Building(BaseModel):
 
 class Exclusion(BaseModel):
     """A deliberate, written-down decision not to meet a profile rule
-    (thesis 5.6.2). Kept in the model rather than quietly dropped, so
+     ept in the model rather than quietly dropped, so
     validation can tell a decision apart from an oversight."""
     rule: str
     scope: str            # space name, or "installation" for a global rule
@@ -66,17 +66,14 @@ class Exclusion(BaseModel):
 
 class PlatformTarget(BaseModel):
     """Where the installation gets deployed. The architect picks this
-    (thesis 5.6.1, step 8) - it is not fixed up front."""
+     it is not fixed up front."""
     platform: str = "thingsboard"
     endpoint: Optional[str] = None
     authenticated: bool = False
 
 
 class Installation(BaseModel):
-    """The root of it all - the shared configuration every agent works on.
-
-    Agents read and change this, it is what gets checkpointed between steps,
-    and it is what the architect is shown when they ask (thesis 5.1).
+    """The shared configuration every agent works on.
     """
     tenant: str = "default-tenant"
     name: str = "unnamed-installation"

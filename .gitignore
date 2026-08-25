@@ -25,3 +25,9 @@ out/
 # --- OS / Environment ---
 .DS_Store
 .env
+
+# --- Runtime state (regenerated; never source) ---
+src/iot_agentic_deployer/iot_agentic.db
+src/iot_agentic_deployer/iot_agentic.db-shm
+src/iot_agentic_deployer/iot_agentic.db-wal
+src/iot_agentic_deployer/sessions_index.json

@@ -1,4 +1,4 @@
-"""Conceptualisation agent (thesis 5.4).
+"""Conceptualisation agent
 
 Turns the architect's description of a building into the topology model. Each
 new description refines the same model rather than starting a new one, and
@@ -22,10 +22,6 @@ from iot_agentic_deployer.rendering.formatting import installation_to_markdown
 
 # Shapes used only for extraction, with no `devices` field on purpose.
 # Equipment belongs to Configuration, which checks it against the catalogue
-# (thesis 5.3, R2). Give the topology schema somewhere to put devices and a
-# room description that happens to mention a TV, a microscope or a door will
-# put them there - inventing equipment nobody asked for, under names that
-# aren't in the catalogue, which Validation can then only reject.
 class TopologyAccessPoint(BaseModel):
     name: str = Field(description="What this door or entrance is called, e.g. 'Main entrance'.")
 
@@ -46,11 +42,6 @@ class TopologyFloor(BaseModel):
 
 
 class TopologyBuilding(BaseModel):
-    # `building_name`, not `name`. Asked for a bare `name` the model answers
-    # "name of what?" and fills in whatever is nearest to hand - the schema's
-    # own title, or the use case the architect happened to mention - while
-    # the real name ends up in location. Saying which name we mean in the
-    # field itself is what stops that.
     building_name: str = Field(description=(
         "Just the building's name, as the architect said it - for example "
         "'Computer Science Department'. Not the installation, not the use "
@@ -66,12 +57,6 @@ class TopologyBuilding(BaseModel):
     floors: list[TopologyFloor] = Field(default_factory=list)
 
 
-# What counts as the architect having mentioned a door, or a kind of room.
-# The extractor is told to model only what it was given, and mostly ignores
-# that: on wording that mentions no door at all it still hangs one off every
-# room about five times in six. Since an access point is where a people
-# counter ends up being installed, that means planning hardware onto doorways
-# nobody has. So the text gets the final say (thesis 5.3, R2).
 ACCESS_POINT_EVIDENCE = (
     r"doors?", r"doorways?", r"entrances?", r"entry", r"entries", r"exits?",
     r"passages?", r"gates?", r"access\s*points?", r"turnstiles?",
@@ -94,34 +79,49 @@ def _mentioned(text: str, patterns) -> bool:
     return any(re.search(rf"\b{p}", text) for p in patterns)
 
 
+def _same_shape(extracted: TopologyBuilding, previous: Optional[Building]) -> bool:
+    """True when the extraction has the same floors, and the same rooms per
+    floor, as the model already held."""
+    if not previous or len(previous.floors) != len(extracted.floors):
+        return False
+    return all(len(pf.spaces) == len(ef.spaces)
+               for pf, ef in zip(previous.floors, extracted.floors))
+
+
 def _ground(extracted: TopologyBuilding, said: str,
             previous: Optional[Building]) -> tuple[TopologyBuilding, int, int]:
     """Throws away anything the architect never actually said.
 
-    Only their own words count, plus whatever the model already held - an
-    earlier turn's structure is established, not invented. Returns the
-    cleaned extraction and how much was dropped, so the trace can show it.
+    Only their own words count, plus whatever the model already held(no inventions)
+    Returns the cleaned extraction and how much was dropped, so the trace can show it.
     """
+
+    #search for known types and access points, indexed by name AND by position
     said = said.lower()
     known_types, known_aps = {}, set()
     if previous:
-        for floor in previous.floors:
-            for space in floor.spaces:
-                known_types[(floor.name, space.name)] = space.type
-                if space.access_points:
-                    known_aps.add((floor.name, space.name))
+        for fi, floor in enumerate(previous.floors):
+            for si, space in enumerate(floor.spaces):
+                for key in ((floor.name, space.name), (fi, si)):
+                    known_types[key] = space.type
+                    if space.access_points:
+                        known_aps.add(key)
+    by_position = _same_shape(extracted, previous)
 
     dropped_types = dropped_aps = 0
-    for floor in extracted.floors:
-        for space in floor.spaces:
+    for fi, floor in enumerate(extracted.floors):
+        for si, space in enumerate(floor.spaces):
+            #the name first; if it no longer matches it was renamed, so fall back on where it sits
             here = (floor.name, space.name)
-
+            if here not in known_types and by_position:
+                here = (fi, si)
+            #a type different from unknown survive only if is mentioned in text
             if (space.type != "unknown"
                     and not _mentioned(said, TYPE_EVIDENCE.get(space.type, ()))
                     and known_types.get(here) != space.type):
                 space.type = "unknown"
                 dropped_types += 1
-
+            #also the access points
             if (space.access_points
                     and not _mentioned(said, ACCESS_POINT_EVIDENCE)
                     and here not in known_aps):
@@ -132,12 +132,12 @@ def _ground(extracted: TopologyBuilding, said: str,
 
 
 def _derived_installation_name(building_name: str) -> str:
-    """What the installation gets called when nobody has named it."""
+    """What the installation gets called when nobody has named it"""
     return f"{building_name} installation"
 
 
 def _to_topology(building: Building) -> TopologyBuilding:
-    """The model as the extractor expects to see it - the spatial part only,
+    """The model as the extractor expects to see it: the spatial part only,
     with no devices, which is exactly what we want it refining."""
     return TopologyBuilding(
         building_name=building.name,
@@ -158,18 +158,33 @@ def _to_topology(building: Building) -> TopologyBuilding:
 
 def _to_building(extracted: TopologyBuilding, previous: Optional[Building]) -> Building:
     """Builds the real Building back out of the topology-only extraction,
-    keeping whatever devices Configuration had already placed.
-
-    Since extraction can't see devices, let alone emit them, describing the
-    building again can't invent equipment or throw any away. All it can touch
-    is the spatial structure."""
+    keeping whatever devices Configuration had already placed"""
     prev_devices, prev_ap_devices = {}, {}
     if previous:
-        for floor in previous.floors:
-            for space in floor.spaces:
-                prev_devices[(floor.name, space.name)] = space.devices
-                for ap in space.access_points:
-                    prev_ap_devices[(floor.name, space.name, ap.name)] = ap.devices
+        #indexed by name AND by position, so a rename does not lose the room's devices
+        for fi, floor in enumerate(previous.floors):
+            for si, space in enumerate(floor.spaces):
+                for key in ((floor.name, space.name), (fi, si)):
+                    prev_devices[key] = space.devices
+                    for ai, ap in enumerate(space.access_points):
+                        prev_ap_devices[(*key, ap.name)] = ap.devices
+                        prev_ap_devices[(*key, ai)] = ap.devices
+    by_position = _same_shape(extracted, previous)
+
+    def carried(fi, si, tf, ts, ai=None, tap=None):
+        """The devices the previous model held here: found by name, or by
+        position when the name changed under a rename."""
+        for key in ((tf.name, ts.name), (fi, si) if by_position else None):
+            if key is None:
+                continue
+            if tap is None:
+                if key in prev_devices:
+                    return prev_devices[key]
+            else:
+                for leaf in (tap.name, ai):
+                    if (*key, leaf) in prev_ap_devices:
+                        return prev_ap_devices[(*key, leaf)]
+        return []
 
     return Building(
         name=extracted.building_name,
@@ -188,19 +203,17 @@ def _to_building(extracted: TopologyBuilding, previous: Optional[Building]) -> B
                         intended_use=ts.intended_use,
                         accessibility=ts.accessibility,
                         priority=ts.priority,
-                        devices=prev_devices.get((tf.name, ts.name), []),
+                        devices=carried(fi, si, tf, ts),
                         access_points=[
-                            AccessPoint(
-                                name=tap.name,
-                                devices=prev_ap_devices.get((tf.name, ts.name, tap.name), []),
-                            )
-                            for tap in ts.access_points
+                            AccessPoint(name=tap.name,
+                                        devices=carried(fi, si, tf, ts, ai, tap))
+                            for ai, tap in enumerate(ts.access_points)
                         ],
                     )
-                    for ts in tf.spaces
+                    for si, ts in enumerate(tf.spaces)
                 ],
             )
-            for tf in extracted.floors
+            for fi, tf in enumerate(extracted.floors)
         ],
     )
 
@@ -218,13 +231,7 @@ class ConceptualisationNode:
 
     def __init__(self, llm):
         # A cheap check on what the message is even asking, before we touch
-        # the model. Extracting a topology rewrites every field of every
-        # space from the whole conversation, so it must not run on a message
-        # that wasn't describing the building at all - ask "what room types
-        # can I have?" and it will happily go and re-guess types for rooms
-        # the architect had already settled.
-        # function_calling instead of json_schema for the reason spelled out
-        # in supervisor.py.
+        # the model
         self.intent_llm = llm.with_structured_output(
             ConceptualisationIntent, method="function_calling")
         self.intent_prompt = (
@@ -232,10 +239,6 @@ class ConceptualisationNode:
             "building topology."
         )
 
-        # Constrained generation: no free text where a structure is expected
-        # (thesis 5.3). Space types are a Literal, so the schema itself holds
-        # the vocabulary - and with no `devices` field on TopologyBuilding,
-        # equipment mentioned in passing has nowhere to land.
         self.modeller = llm.with_structured_output(TopologyBuilding, method="function_calling")
         self.system_prompt = (
             "Extract a structured building topology from the description given by the "
@@ -253,17 +256,7 @@ class ConceptualisationNode:
     def _extract(self, context: list, had_floors: bool) -> Optional[TopologyBuilding]:
         """Runs the extraction, and refuses to hand back a result that would
         throw the model away.
-
-        The extractor is not reliable: given identical input it will sometimes
-        return the building with every floor intact and sometimes return no
-        floors at all. Writing that straight into the model wipes a topology
-        the architect had already built - which is what made conceptualisation
-        look like it kept coming back empty. So an empty answer is retried
-        once, and if it comes back empty again the caller keeps what it had.
-
-        Only applies when there was something to lose: on a first description
-        an empty result is a real answer, and the completeness rules will ask
-        about the floors soon enough."""
+        The extraction is repeated for better results"""
         extracted = self.modeller.invoke(context)
         if extracted.floors or not had_floors:
             return extracted
@@ -288,16 +281,13 @@ class ConceptualisationNode:
 
         context = [{"role": "system", "content": self.system_prompt}] + state["messages"]
         if inst.building:
-            # Show the current model in the shape we want back, field names
-            # and all, so refining it doesn't mean translating between two
-            # slightly different vocabularies.
+            # Show the current model in the shape we want back
             context.append({"role": "system", "content": "Model to refine:\n" + _to_topology(
                 inst.building).model_dump_json()})
 
         extracted = self._extract(context, had_floors=bool(inst.building and inst.building.floors))
         if extracted is None:
-            # Nothing usable came back and there is a model already worth
-            # keeping. Say so and leave it alone.
+            # Nothing usable came back so let's keep the previous model
             return {
                 "messages": [AIMessage(content=(
                     "[Conceptualisation] I couldn't read a building out of that, so the model "
@@ -306,20 +296,23 @@ class ConceptualisationNode:
                 "trace": trace("Conceptualisation", "extraction_failed", "model left as it was"),
             }
 
-        # Only the architect's own words can justify a door or a room type.
+        # Only the architect's own words can justify a door or a room type
         said = " ".join(m.content for m in state["messages"]
                         if isinstance(m, HumanMessage))
         extracted, dropped_types, dropped_aps = _ground(extracted, said, inst.building)
 
         previous_building_name = inst.building.name if inst.building else None
+        devices_before = len(inst.all_devices())
         inst.building = _to_building(extracted, inst.building)
+        # Devices are meant to survive a re-description untouched. If any did
+        # not, old and new could not be matched up - a rename the position
+        # fallback could not cover - and that must not pass in silence, which
+        # is exactly how this went unnoticed for so long.
+        orphaned = devices_before - len(inst.all_devices())
 
         # The installation is named after the building until the architect
         # gives it a name of its own; from then on it keeps that name, and a
-        # later building rename leaves it alone. "Still the derived name"
-        # is how we tell the two apart - there is no flag to consult, and
-        # deriving it once and freezing it (what used to happen here) left
-        # the installation stuck with the building's old name for good.
+        # later building rename leaves it alone.
         still_derived = {"unnamed-installation"}
         if previous_building_name:
             still_derived.add(_derived_installation_name(previous_building_name))
@@ -329,9 +322,7 @@ class ConceptualisationNode:
         elif inst.name in still_derived:
             inst.name = _derived_installation_name(inst.building.name)
 
-        # Rules decide what's missing, not the model's judgement - otherwise
-        # a plausible-sounding default quietly stands in for a decision the
-        # architect never actually made (thesis 5.3, R2).
+        # Rules decide what's missing, not the model's judgement
         questions = missing_topology_information(inst)
         if questions:
             body = "\n".join(f"- {q}" for q in questions)
@@ -347,5 +338,6 @@ class ConceptualisationNode:
             "trace": trace("Conceptualisation", "update_topology",
                            f"{len(questions)} clarification(s) pending"
                            + (f", dropped {dropped_types} unstated type(s)" if dropped_types else "")
-                           + (f", dropped {dropped_aps} unstated access point(s)" if dropped_aps else "")),
+                           + (f", dropped {dropped_aps} unstated access point(s)" if dropped_aps else "")
+                           + (f", {orphaned} device(s) orphaned by a rename" if orphaned > 0 else "")),
         }

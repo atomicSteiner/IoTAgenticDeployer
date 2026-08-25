@@ -1,10 +1,4 @@
-"""Starting values worked out from the catalogue and the model (R4).
-
-The catalogue's `default_metadata` says what a device needs before it can be
-deployed; this fills those templates in from the topology it's going into.
-None of it counts as a decision - every default is reported back to the
-architect, and anything that can't be worked out is left empty so validation
-still flags it (thesis 5.3, R2).
+"""Starting values worked out from the catalogue and the model
 """
 
 from iot_agentic_deployer.domain.catalog.loader import GATEWAY_CATEGORIES, load_device_catalog
@@ -36,9 +30,8 @@ def resolve_default_metadata(spec: dict, inst: Installation, floor, space,
 
     Hands back what it managed to work out, and separately the keys it
     couldn't. Those get left empty rather than stuffed with a placeholder -
-    usually gateway_id, when there's no gateway yet - so validation still
-    reports the gap instead of the model carrying a value that means nothing
-    (thesis 5.3, R2)."""
+    usually gateway_id, when there's no gateway yet: so validation still
+    reports the gap instead of the model carrying a value that means nothing"""
     values = {
         "building": inst.building.name if inst.building else "",
         "floor": floor.name,
@@ -55,6 +48,6 @@ def resolve_default_metadata(spec: dict, inst: Installation, floor, space,
         try:
             resolved[key] = str(template).format(**values)
         except KeyError:
-            # Nothing to put in the placeholder, so leave the field empty.
+            # Nothing to put in the placeholder, so leave the field empt
             unresolved.append(key)
     return resolved, unresolved

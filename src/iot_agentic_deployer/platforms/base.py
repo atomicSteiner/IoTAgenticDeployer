@@ -1,9 +1,9 @@
-"""Platform adapters (thesis 5.5).
+"""Platform adapters
 
 Each supported platform exposes what it can provision as a set of typed
 operations. Keeping the platform-specific parts behind that boundary is what
 lets another platform be added without redesigning the configuration layer
-above (R6).
+above
 """
 
 from abc import ABC, abstractmethod

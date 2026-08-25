@@ -1,22 +1,15 @@
-"""Behaviour planning (thesis 5.4, 5.6.3).
+"""Behaviour planning
 
-Works out the operations that would turn the configuration model into a real
-installation, without running any of them. Planning is kept apart from doing,
-so the architect can read what is about to happen before anything is written
-(R3).
+Works out the operations that would realise the configuration, without
+running any of them, so the architect can read what is about to happen.
 
-None of this is generated: it is a straight reading of the model and the
-catalogue. Platform-specific naming comes from each entry's
-`platform_mapping` instead of being written in here, so supporting another
-platform is a catalogue edit rather than a change to this file (R4, R6).
 """
 
 from iot_agentic_deployer.domain.catalog.loader import load_device_catalog
 from iot_agentic_deployer.domain.models import Installation
 from iot_agentic_deployer.platforms.base import PlatformOperation
 
-# Asset types for the containment hierarchy. Devices bring their own type
-# from the catalogue; the spatial levels do not, so they are named here.
+# Devices bring their own type from the catalogue, the spatial levels do not
 BUILDING_ASSET_TYPE = "building"
 FLOOR_ASSET_TYPE = "floor"
 SPACE_ASSET_TYPE = "space"
@@ -26,8 +19,8 @@ STATUS_ICONS = {"pending": "·", "completed": "✅", "failed": "❌", "skipped":
 
 
 def _ref(op_id: str) -> dict:
-    """Points at an id some earlier operation will produce. Filled in at
-    execution time by PlatformAdapter.execute."""
+    """Points at an id an earlier operation will produce, filled in at
+    execution time by PlatformAdapter.execute"""
     return {"$ref": op_id}
 
 
@@ -47,12 +40,11 @@ def _relation(op_id: str, parent_op: str, parent_kind: str,
 def derive_plan(inst: Installation) -> list[PlatformOperation]:
     """Turns the installation into an ordered list of platform operations.
 
-    They come out in the model's own containment order - building, floors,
-    spaces, access points, devices - so nothing ever refers to a parent that
-    has not been created yet. op_ids come from the model rather than being
-    generated, which means planning the same configuration twice gives the
-    same ids, and a retry can still find entities created during an earlier
-    half-finished run (R7)."""
+    They come out in containment order (building, floors, spaces, access
+    points, devices), so nothing refers to a parent that does not exist yet.
+    op_ids come from the model rather than being generated, so planning the
+    same configuration twice gives the same ids and a retry still finds what
+    an earlier run created"""
     if not inst.building:
         return []
 
@@ -98,9 +90,7 @@ def derive_plan(inst: Installation) -> list[PlatformOperation]:
                 ops += _device_operations(device, space_op, "ASSET", space_name,
                                           catalog, platform)
 
-            # Access points are entities in their own right. A device on a
-            # door belongs to the door, not to the room, and the deployed
-            # hierarchy should say so (thesis 5.1).
+            # A device on a door belongs to the door, not to the room
             for access_point in space.access_points:
                 ap_op = f"asset:ap:{floor.name}:{space.name}:{access_point.name}"
                 ap_name = f"{space_name} / {access_point.name}"
@@ -123,15 +113,13 @@ def derive_plan(inst: Installation) -> list[PlatformOperation]:
 
 def _device_operations(device, parent_op: str, parent_kind: str, parent_name: str,
                        catalog: dict, platform: str) -> list[PlatformOperation]:
-    """Everything needed to create one device and hang it off whatever it is
-    installed in."""
+    """Everything needed to create one device and hang it off whatever it
+    is installed in"""
     spec = catalog.get(device.device_type_id, {})
     mapping = spec.get("platform_mapping", {}).get(platform, {})
     display_name = spec.get("display_name", device.device_type_id)
 
-    # The catalogue decides whether this ends up a device or an asset, which
-    # is what lets one model deploy onto platforms that disagree about the
-    # distinction (R6).
+    # The catalogue decides device or asset, so one model fits both
     as_asset = mapping.get("entity") == "asset"
     device_op = f"device:{device.instance_name}"
 
@@ -157,9 +145,7 @@ def _device_operations(device, parent_op: str, parent_kind: str, parent_name: st
 
     ops = [create]
 
-    # Carry the required metadata across too, so what lands on the platform
-    # can still be traced back to the decisions in the model instead of
-    # turning up anonymous (R7).
+    # Carry the metadata across, so what lands on the platform is traceable
     attributes = dict(device.metadata)
     attributes.setdefault("device_type_id", device.device_type_id)
     ops.append(PlatformOperation(
@@ -177,9 +163,8 @@ def _device_operations(device, parent_op: str, parent_kind: str, parent_name: st
 
 
 def plan_to_markdown(plan: list[PlatformOperation]) -> str:
-    """Renders the plan for the architect. Built in code like every other
-    view of the model, so what gets confirmed is exactly what was
-    derived."""
+    """Renders the plan for the architect, built in code like every other
+    view of the model, so what gets confirmed is what was derived"""
     if not plan:
         return "_No operation is required for this configuration._"
 

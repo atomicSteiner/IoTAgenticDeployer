@@ -12,11 +12,11 @@ def append(left: list, right: list) -> list:
 
 
 def trace(agent: str, action: str, detail: str = "") -> list[dict]:
-    """One line for the activity trace, ready to drop into state['trace'].
+    """One line for the activity trace, ready to drop into state['trace']
 
     Every agent writes down what it was asked for and what came of it, in the
     same shape, so the trace reads as a single account of the session rather
-    than six agents keeping their own notes (R7)."""
+    than six agents keeping their own notes"""
     return [{"agent": agent, "action": action, "detail": detail,
              "at": datetime.utcnow().isoformat()}]
 

@@ -1,8 +1,8 @@
 """Configuration agent.
 
 Applies the use-case profile, reads the catalogue, and puts devices into
-spaces - either one at a time or across every space of a given type. The
-language model only works out what was being asked for; looking devices up
+spaces
+The language model only works out what was being asked for; looking devices up
 and placing them is code.
 """
 
