@@ -8,10 +8,15 @@ the architect directly.
 from typing import Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import BaseModel, Field
 
 from iot_agentic_deployer.domain.models import Installation
 from iot_agentic_deployer.domain.state import IoTDeploymentState, build_routing_decision, trace
 from iot_agentic_deployer.domain.validation import missing_topology_information
+
+# A message asks for one or two things; a longer list is the model running away
+# with it rather than reading it
+MAX_STAGES = 3
 
 AGENT_PURPOSE = {
     "Conceptualisation": "translates the description of the environment into the topology "
@@ -29,14 +34,18 @@ GUIDANCE = (
     "Stages of the activity: describe the building -> Conceptualisation; choose the use case "
     "and the devices -> Configuration; review -> Summary; check before deploying -> "
     "Validation; deploy -> Deployment.\n"
-    "Delegate to Deployment only when the architect has explicitly confirmed. Deployment "
-    "first presents the plan and then, on a second confirmation, executes it.\n"
+    "Asking to deploy is a request for Deployment, and for Deployment alone: it checks the "
+    "rules itself, derives the plan, shows it and waits there for the architect to confirm "
+    "before writing anything. Do not send a Validation ahead of it - that is the architect's "
+    "to ask for, and it is not what they asked for.\n"
     "Do not re-delegate a stage that already produced a result, unless the architect asks "
     "to change or refresh something.\n"
-    "Delegate to exactly the stage(s) the architect's message actually asks for - never a "
-    "stage they did not request, even if it would logically come next (e.g. describing the "
-    "building is not a request to also pick a use case or assign devices). When in doubt, "
-    "choose WaitUser and ask, rather than guessing ahead on the architect's behalf.\n"
+    "Delegate to exactly the stage(s) the architect's message actually asks for, in the "
+    "order they run - never a stage they did not request, even if it would logically come "
+    "next (e.g. describing the building is not a request to also pick a use case or assign "
+    "devices). Most messages ask for one stage; name a second only when the message asks "
+    "for that too ('assign the sensors, then validate'). When in doubt, choose WaitUser "
+    "and ask, rather than guessing ahead on the architect's behalf.\n"
     "If the architect is asking a question about the process itself - what to do next, what "
     "options they have, for advice or an opinion - rather than describing, deciding or "
     "requesting a stage, that is not a delegation: choose WaitUser and answer the question "
@@ -44,11 +53,29 @@ GUIDANCE = (
 )
 
 
+# Naming the language and translating are two calls, not one: shown the
+# architect's message and the suggestion together, the model rewrites the
+# suggestion into their request, or answers it outright. Split, the sentence
+# being translated never sees the message at all
+class MessageLanguage(BaseModel):
+    language: str = Field(description=(
+        "The language this message is written in, named in English "
+        "('Italian', 'Spanish', 'English')."))
+
+
+# Plain text, not a structured field
+TRANSLATOR = ("You are a translator. Reply with the translation and nothing else: no "
+              "preamble, no alternatives, no quotation marks, no explanation.")
+
+
 class SupervisorNode:
 
-    def __init__(self, llm, valid_destinations: list[str]):
+    def __init__(self, llm, valid_destinations: list[str], router_llm=None):
+        self.llm = llm
+        self.language_llm = llm.with_structured_output(
+            MessageLanguage, method="function_calling")
         self.valid_destinations = valid_destinations
-        self.supervisor_llm = llm.with_structured_output(
+        self.supervisor_llm = (router_llm or llm).with_structured_output(
             build_routing_decision(valid_destinations), method="function_calling")
 
         agents = "\n".join(f"- {n}: {AGENT_PURPOSE.get(n, '')}" for n in valid_destinations)
@@ -61,7 +88,7 @@ class SupervisorNode:
             "You never perform a stage yourself and you never describe an agent's outcome in "
             "response_to_user - only the agent that actually runs may report what it did, in "
             "its own message, on a later step. Your response_to_user must describe only what "
-            "is true right now: if next_node names an agent, say that you are handing off to "
+            "is true right now: if next_nodes names an agent, say that you are handing off to "
             "it, not what it will find or produce. Never write 'I will now create/select/"
             "configure...' or 'I have created/configured...' - you do not create or configure "
             "anything.\n"
@@ -111,10 +138,28 @@ class SupervisorNode:
         plan = state.get("deployment_plan")
         if not plan:
             return "The configuration is deployable - ask to deploy when ready."
-        if not state.get("plan_confirmed") and any(op["status"] == "pending" for op in plan):
+        if any(op["status"] == "pending" for op in plan):
             return "Review the planned operations and confirm to execute them."
 
         return None
+
+    def _phrase(self, hint: str, history: list) -> str:
+        """Which step comes next is still read off the stored model; only the
+        wording is the LLM's, so the suggestion comes back in whatever
+        language the architect is writing in"""
+        asked = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
+        try:
+            language = self.language_llm.invoke(
+                [{"role": "user", "content": asked.content if asked else "hello"}]).language
+            if language.strip().lower().startswith("english"):
+                return hint
+            said = self.llm.invoke([
+                {"role": "system", "content": TRANSLATOR},
+                {"role": "user", "content": f"Translate into {language}: {hint}"},
+            ]).content.strip()
+            return said or hint
+        except Exception:
+            return hint     # a hint is not worth losing the turn over
 
     def __call__(self, state: IoTDeploymentState) -> dict:
         history = state["messages"]
@@ -122,13 +167,23 @@ class SupervisorNode:
         # If the last message is an agent's rather than the architect's, an
         # agent has just run and we're on the way back
         if history and not isinstance(history[-1], HumanMessage):
+            # An agent has just finished. Whatever else the architect's message
+            # asked for was decided on the way out and is waiting here, so take
+            # it rather than ask a model again: deciding twice about the same
+            # message is how the supervisor used to report work that never ran
+            pending = state.get("pending_nodes") or []
+            if pending:
+                return {"next_node": pending[0], "pending_nodes": pending[1:],
+                        "trace": trace("Supervisor", "delegate", pending[0])}
+
             result = {
                 "next_node": "WaitUser",
                 "trace": trace("Supervisor", "delegate", "WaitUser"),
             }
             hint = self._next_step_hint(state)
             if hint:
-                result["messages"] = [AIMessage(content=f"💡 Next: {hint}")]
+                result["messages"] = [AIMessage(
+                    content=f"💡 Next: {self._phrase(hint, history)}")]
             return result
 
         messages = (
@@ -138,8 +193,15 @@ class SupervisorNode:
         )
         decision = self.supervisor_llm.invoke(messages)
 
+        queue = [node for node in decision.next_nodes if node != "WaitUser"][:MAX_STAGES]
+        # Deployment stops on its own interrupt: anything queued behind it would
+        # run off the back of the architect's confirmation, unasked
+        if "Deployment" in queue:
+            queue = queue[:queue.index("Deployment") + 1]
+
         return {
             "messages": [AIMessage(content=decision.response_to_user)],
-            "next_node": decision.next_node,
-            "trace": trace("Supervisor", "delegate", decision.next_node),
+            "next_node": queue[0] if queue else "WaitUser",
+            "pending_nodes": queue[1:],
+            "trace": trace("Supervisor", "delegate", " -> ".join(queue) or "WaitUser"),
         }

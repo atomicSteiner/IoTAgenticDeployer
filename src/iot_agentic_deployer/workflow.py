@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command
 
 
 
@@ -39,7 +40,21 @@ class IoTAgenticWorkflow:
             base_url="https://openrouter.ai/api/v1",
             model=os.getenv("OPENAI_MODEL"),
             api_key=os.getenv("OPENAI_API_KEY"),
-            max_tokens=4096,
+            # The largest thing we ever ask for is a topology: ~2k tokens for
+            # five floors, ~9k for a very large building. You pay for what is
+            # generated, not for the ceiling, so this only has to be high
+            # enough not to cut an extraction in half
+            max_tokens=8192,
+        )
+
+        # Routing is one small call per turn, and now has to break a message
+        # down into an ordered list of stages. Worth a model of its own when
+        # the cheap one struggles; unset, it is the same model as everything else
+        self.router_llm = ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            model=os.getenv("ROUTER_MODEL") or os.getenv("OPENAI_MODEL"),
+            api_key=os.getenv("OPENAI_API_KEY"),
+            max_tokens=1024,
         )
 
         # Where the configuration lives: keeps the model and its checkpoints
@@ -56,10 +71,11 @@ class IoTAgenticWorkflow:
             "Configuration": ConfigurationNode(llm=self.llm),
             "Summary": SummaryNode(),
             "Validation": ValidationNode(),
-            "Deployment": DeploymentNode(adapter_options=adapter_options),
+            "Deployment": DeploymentNode(llm=self.llm, adapter_options=adapter_options),
         }
         self.nodes = {
-            "Supervisor": SupervisorNode(llm=self.llm, valid_destinations=list(self.agents)),
+            "Supervisor": SupervisorNode(llm=self.llm, router_llm=self.router_llm,
+                                         valid_destinations=list(self.agents)),
             **self.agents,
         }
 
@@ -104,19 +120,34 @@ class IoTAgenticWorkflow:
             final = event
         return final["messages"][-1].content
 
-    def confirm_plan(self, session_id: str) -> None:
-        """Notes that the architect confirmed. Going from planning to actually
-        doing it is a step they take deliberately."""
-        self.system.update_state(self._config(session_id), {"plan_confirmed": True})
+    #answers the interrupt the deployment agent is waiting on, and lets the graph carry on
+    def resume(self, session_id: str, value) -> str:
+        final = None
+        for event in self.system.stream(Command(resume=value),
+                                        config=self._config(session_id),
+                                        stream_mode="values"):
+            final = event
+        return final["messages"][-1].content
+
+    #the payload of the interrupt waiting on the architect, if there is one
+    def pending_approval(self, session_id: str) -> dict | None:
+        snapshot = self.system.get_state(self._config(session_id))
+        return snapshot.interrupts[0].value if snapshot.interrupts else None
+
+    def message_times(self, session_id: str) -> dict[str, str]:
+        """When each message first appeared, taken from the checkpoint that
+        first held it. Nothing is written down at the time: conversations
+        saved before this existed get their times too"""
+        times = {}
+        for snapshot in reversed(list(self.system.get_state_history(self._config(session_id)))):
+            for message in snapshot.values.get("messages", []):
+                times.setdefault(message.id, snapshot.created_at)
+        return times
 
     #the whole stored state of a session, or {} if it has never run
     def get_state_values(self, session_id: str) -> dict:
         snapshot = self.system.get_state(self._config(session_id))
         return snapshot.values if snapshot else {}
-
-    #just the conversation out of that state
-    def get_history(self, session_id: str) -> list:
-        return self.get_state_values(session_id).get("messages", [])
 
     def delete_session(self, session_id: str) -> None:
         """Throws a configuration away(model, history and checkpoints"""

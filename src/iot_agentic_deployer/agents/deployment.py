@@ -12,7 +12,11 @@ away the work that succeeded
 """
 
 
+from typing import Literal
+
 from langchain_core.messages import AIMessage
+from langgraph.types import interrupt
+from pydantic import BaseModel, Field
 
 from iot_agentic_deployer.domain.models import Installation
 from iot_agentic_deployer.domain.state import IoTDeploymentState, trace
@@ -22,96 +26,64 @@ from iot_agentic_deployer.platforms.planning import derive_plan, plan_to_markdow
 from iot_agentic_deployer.rendering.formatting import validation_to_markdown
 
 
+class ConfirmationAnswer(BaseModel):
+    # Worded flatly on purpose. Phrased as "'yes' ONLY when..." followed by a
+    # list of refusals, a cautious model reads the caveats and answers no even
+    # to the word 'confirm'
+    answer: Literal["yes", "no"] = Field(description=(
+        "yes = the message approves executing the plan now, in any language "
+        "('confirm', 'yes', 'ok', 'go ahead', 'procedi'). "
+        "no = it does not, because it refuses, postpones, asks something, or "
+        "attaches a condition ('yes, but change the gateway first')."))
+
+
 class DeploymentNode:
 
-    def __init__(self, adapter_options: dict | None = None):
+    def __init__(self, llm=None, adapter_options: dict | None = None):
         # Options passed to the adapter factory (endpoint, credentials).
         self.adapter_options = adapter_options or {}
+        # The one thing this agent asks a model: whether the answer to its own
+        # interruption point was a go-ahead. Planning, validation and execution
+        # stay plain code. Two Literals, so the answer cannot be a third thing
+        self.confirm_llm = llm and llm.with_structured_output(
+            ConfirmationAnswer, method="function_calling")
 
     def __call__(self, state: IoTDeploymentState) -> dict:
         inst = Installation(**state.get("installation", {}))
-        plan = [PlatformOperation(**op) for op in state.get("deployment_plan", [])]
-        confirmed = state.get("plan_confirmed", False)
 
-        #there is a plan and confirmed
-        if plan and confirmed:
-            # What was confirmed is the plan the architect saw, not whatever
-            # the model says by now.
-            # Still it's necessary to check the rules and re-derive the operations
-            # against the model as it stands. _plan already works this way
-            # it just has to hold here too, where the writing actually happens
-            report = validate_installation(inst)
-            if not report["deployable"]:
-                return {
-                    "validation_report": report,
-                    "plan_confirmed": False,
-                    "messages": [AIMessage(content=(
-                        "[Deployment] Not executed: the configuration no longer satisfies "
-                        "the rules in force.\n\n" + validation_to_markdown(report)))],
-                    "trace": trace("Deployment", "execution_refused", "configuration not valid"),
-                }
+        # Everything above the interrupt runs again when the architect
+        # answers, so rules and operations are always re-established against
+        # the model as it stands, not as it stood when the plan was shown
+        planned = self._plan(inst)
+        if "deployment_plan" not in planned:      # not valid, or unreachable
+            return planned
 
-            current = derive_plan(inst)
-            if [op.op_id for op in current] != [op.op_id for op in plan]:
-                return self._replan_stale(plan, current)
+        plan = self._carry_completed(
+            [PlatformOperation(**op) for op in state.get("deployment_plan", [])],
+            [PlatformOperation(**op) for op in planned["deployment_plan"]])
 
-            return self._realise(inst, plan)
+        # Suspends here with the plan; what comes back is whatever the
+        # architect wrote next, and reading it is this agent's own business
+        answer = interrupt({"operations": [op.model_dump() for op in plan],
+                            "platform": inst.target.platform})
+        if not self._confirms(answer):
+            return {**planned, "messages": [AIMessage(content=(
+                "[Deployment] Not executed. Nothing has been written.\n\n"
+                + plan_to_markdown(plan)))],
+                "trace": trace("Deployment", "not_executed", f"{len(plan)} operation(s)")}
+        return {**planned, **self._realise(inst, plan)}
 
-        #if there is no plan we formulate it
-        if plan:
-            return self._awaiting_confirmation(inst, plan)
-        return self._plan(inst)
-
-    # -- a plan exists but has not been confirmed -------------------------
-
-    def _awaiting_confirmation(self, inst: Installation,
-                               plan: list[PlatformOperation]) -> dict:
-        """We're back at Deployment while a plan is still waiting.
-
-        Confirming is a step the architect takes deliberately,
-        and it goes through the confirm control rather than through the
-        conversation"""
-        report = validate_installation(inst)
-        if not report["deployable"]:
-            return {
-                "validation_report": report,
-                "messages": [AIMessage(content=(
-                    "[Deployment] The pending plan can no longer be executed: the "
-                    "configuration no longer satisfies the rules in force.\n\n"
-                    + validation_to_markdown(report)))],
-                "trace": trace("Deployment", "plan_refused", "configuration not valid"),
-            }
-
-        current = derive_plan(inst)
-        if [op.op_id for op in current] == [op.op_id for op in plan]:
-            done = sum(1 for op in plan if op.status == "completed")
-            detail = (f"{len(plan)} operation(s)"
-                      + (f", {done} already completed" if done else ""))
-            return {
-                "validation_report": report,
-                "messages": [AIMessage(content=(
-                    f"[Deployment] A plan of {detail} is ready and unchanged. Nothing was "
-                    f"re-planned and nothing has been written.\n\n"
-                    "Use the **▶️ Confirm and execute** button above the chat to run it — "
-                    "execution is confirmed there rather than in conversation, so that "
-                    "writing to the platform is always a deliberate step."))],
-                "trace": trace("Deployment", "plan_pending", detail),
-            }
-
-        current = self._carry_completed(plan, current)
-        return {
-            "deployment_plan": [op.model_dump() for op in current],
-            "validation_report": report,
-            "plan_confirmed": False,
-            "messages": [AIMessage(content=(
-                f"[Deployment] The configuration changed since this plan was derived "
-                f"({len(plan)} operation(s) then, {len(current)} now), so it has been "
-                f"re-derived.\n\n{plan_to_markdown(current)}\n\n"
-                "Nothing has been written. Use the **▶️ Confirm and execute** button "
-                "above the chat to run it."))],
-            "trace": trace("Deployment", "plan_rederived",
-                                  f"{len(plan)} -> {len(current)} operation(s)"),
-        }
+    def _confirms(self, answer) -> bool:
+        """Anything that is not a plain go-ahead leaves the platform untouched,
+        so an unreadable answer is a refusal rather than a gamble."""
+        if not isinstance(answer, str) or not self.confirm_llm:
+            return False
+        return self.confirm_llm.invoke([
+            {"role": "system", "content": (
+                "The architect was shown a deployment plan and asked to confirm it. "
+                "Their reply follows. Does it approve executing the plan now?")},
+            {"role": "user", "content": answer},
+        ]).answer == "yes"
 
     @staticmethod
     def _carry_completed(previous: list[PlatformOperation],
@@ -126,30 +98,6 @@ class DeploymentNode:
                 op.status = "completed"
                 op.result_ref = completed[op.op_id].result_ref
         return current
-
-    def _replan_stale(self, confirmed_plan: list[PlatformOperation],
-                      current: list[PlatformOperation]) -> dict:
-        """The model moved after the plan was confirmed. Nothing runs: show
-        what the configuration means now and ask again, so whatever ends up
-        written is always something they actually looked at."""
-        done = sum(1 for op in confirmed_plan if op.status == "completed")
-        note = ""
-        if done:
-            current = self._carry_completed(confirmed_plan, current)
-            note = (f"\n\nThe {done} operation(s) already performed are preserved and will "
-                    f"not be repeated.")
-
-        return {
-            "deployment_plan": [op.model_dump() for op in current],
-            "plan_confirmed": False,
-            "messages": [AIMessage(content=(
-                f"[Deployment] Not executed: the configuration changed after this plan was "
-                f"confirmed ({len(confirmed_plan)} operation(s) then, {len(current)} now).\n\n"
-                f"{plan_to_markdown(current)}{note}\n\n"
-                "Nothing has been written. Confirm again to execute the plan above."))],
-            "trace": trace("Deployment", "plan_stale",
-                                  f"{len(confirmed_plan)} -> {len(current)} operation(s)"),
-        }
 
     # -- behaviour planning ----------------------------------------------
 
@@ -183,7 +131,6 @@ class DeploymentNode:
             # Record the check that let this plan through, not only the ones
             # that block it
             "validation_report": report,
-            "plan_confirmed": False,
             "messages": [AIMessage(content=(
                 f"[Deployment] Planned operations on **{inst.target.platform}**:\n\n"
                 f"{plan_to_markdown(plan)}\n\n"
@@ -201,20 +148,22 @@ class DeploymentNode:
         refs = {op.op_id: op.result_ref for op in plan if op.status == "completed"}
         failure = None
 
-        for op in plan:
-            #skip the completed operations
-            if op.status == "completed":
-                continue
-            try:
-                op.result_ref = adapter.execute(op, refs)
-                op.status = "completed"
-                op.error = None
-                refs[op.op_id] = op.result_ref
-            except Exception as e:
-                op.status = "failed"
-                op.error = f"{type(e).__name__}: {e}"
-                failure = op
-                break   # stop at the first refusal; the rest stay pending
+        # One connection for the whole run, instead of one per operation
+        with adapter.batch():
+            for op in plan:
+                #skip the completed operations
+                if op.status == "completed":
+                    continue
+                try:
+                    op.result_ref = adapter.execute(op, refs)
+                    op.status = "completed"
+                    op.error = None
+                    refs[op.op_id] = op.result_ref
+                except Exception as e:
+                    op.status = "failed"
+                    op.error = f"{type(e).__name__}: {e}"
+                    failure = op
+                    break   # stop at the first refusal; the rest stay pending
 
         done = sum(1 for op in plan if op.status == "completed")
 
@@ -235,7 +184,6 @@ class DeploymentNode:
 
         return {
             "deployment_plan": [op.model_dump() for op in plan],
-                        "plan_confirmed": False,     # retrying means confirming again
             "messages": [AIMessage(content=content)],
             "trace": trace("Deployment", "realise", f"{done}/{len(plan)} completed, status={status}"),
         }

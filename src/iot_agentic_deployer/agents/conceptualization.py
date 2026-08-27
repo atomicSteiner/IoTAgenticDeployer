@@ -47,8 +47,9 @@ class TopologyBuilding(BaseModel):
         "'Computer Science Department'. Not the installation, not the use "
         "case, not the name of this schema."))
     location: Optional[str] = Field(default=None, description=(
-        "Where the building is: a town, campus or address. Leave empty unless "
-        "the architect actually mentioned a place. Not the building's name."))
+        "The town, campus or address, when the architect names one: 'the CS "
+        "Building in Camerino' has location 'Camerino'. Empty only when no "
+        "place is mentioned at all. Not the building's name."))
     installation_name: Optional[str] = Field(default=None, description=(
         "Only when the architect gives the installation itself a name of its "
         "own, separate from the building's - 'call the installation Wellness "
@@ -307,7 +308,7 @@ class ConceptualisationNode:
         # Devices are meant to survive a re-description untouched. If any did
         # not, old and new could not be matched up - a rename the position
         # fallback could not cover - and that must not pass in silence, which
-        # is exactly how this went unnoticed for so long.
+        # is exactly how this went unnoticed for so long
         orphaned = devices_before - len(inst.all_devices())
 
         # The installation is named after the building until the architect

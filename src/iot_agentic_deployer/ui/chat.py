@@ -24,6 +24,8 @@ from iot_agentic_deployer.workflow import IoTAgenticWorkflow
 
 SESSIONS_INDEX_PATH = Path("sessions_index.json")
 
+_UNREAD = object()      # 'not looked up yet', which None cannot mean here
+
 WELCOME = """
 👋 **Welcome to the IoT Deployment Assistant.**
 
@@ -71,6 +73,8 @@ class IoTDeploymentUI:
         st.set_page_config(page_title=self.page_title, page_icon=self.icon, layout="wide")
         self.workflow = get_workflow()
         self._cached_values = None
+        self._cached_approval = _UNREAD
+        self._cached_times = None
 
     # -- session handling -------------------------------------------------
 
@@ -128,6 +132,27 @@ class IoTDeploymentUI:
         if self._cached_values is None:
             self._cached_values = self.workflow.get_state_values(self._session)
         return self._cached_values
+
+    #the plan waiting on the architect, read once per rerun like the state is
+    def _approval(self) -> dict | None:
+        if self._cached_approval is _UNREAD:
+            self._cached_approval = self.workflow.pending_approval(self._session)
+        return self._cached_approval
+
+    #when each message arrived, read once per rerun like the state is
+    def _times(self) -> dict:
+        if self._cached_times is None:
+            self._cached_times = self.workflow.message_times(self._session)
+        return self._cached_times
+
+    @staticmethod
+    def _stamp(iso: str | None) -> str:
+        """The hour on its own for today, the date as well for anything
+        older: what a phone does, so a long session does not repeat the
+        same date under every line"""
+        when = datetime.fromisoformat(iso).astimezone() if iso else datetime.now()
+        return when.strftime("%H:%M" if when.date() == datetime.now().date()
+                             else "%d %b, %H:%M")
 
     def _installation(self) -> Installation:
         return Installation(**self._values().get("installation", {}))
@@ -258,8 +283,10 @@ class IoTDeploymentUI:
     def _render_deployment_plan(self):
         """Going from planning to actually doing it is a deliberate step: the
         plan is shown, and nothing runs until it is confirmed."""
-        values = self._values()
-        plan = values.get("deployment_plan")
+        # While the graph is suspended the plan lives in the interrupt payload,
+        # not in the state: nothing written before an interrupt is kept
+        approval = self._approval()
+        plan = approval["operations"] if approval else self._values().get("deployment_plan")
         if not plan:
             return
 
@@ -288,23 +315,21 @@ class IoTDeploymentUI:
                 for i, op in enumerate(plan, 1)
             ))
 
-            label = "↻ Retry from the failed operation" if failed else "▶️ Confirm and execute"
-            if st.button(label, type="primary", use_container_width=True):
-                self._execute_plan()
-
-    def _execute_plan(self):
-        """Notes the confirmation and re-enters the graph so the deployment
-        agent can get on with it"""
-        with st.spinner("Executing the planned operations…"):
-            self.workflow.confirm_plan(self._session)
-            self._run_turn("I confirm the deployment plan. Execute it.")
-        st.rerun()
+            if approval:
+                st.info("Reply **confirm** in the chat to execute, or ask for changes.")
+            elif failed:
+                st.info("Ask to deploy again to resume from the operation that failed.")
 
     # -- interaction ------------------------------------------------------
 
     def _run_turn(self, user_input: str) -> str | None:
         import traceback
         try:
+            # A plan waiting on the architect turns the next message into the
+            # answer to it. Reading that answer is the deployment agent's job,
+            # so it goes through untouched
+            if self.workflow.pending_approval(self._session):
+                return self.workflow.resume(self._session, user_input)
             return self.workflow.run_turn(self._session, user_input)
         except BaseExceptionGroup as eg:
             st.error("Workflow error: " + "; ".join(
@@ -317,10 +342,29 @@ class IoTDeploymentUI:
 
     #render each history messages of the workflow
     def _render_history(self):
+        times = self._times()
         for msg in self._values().get("messages", []):
             role = "user" if isinstance(msg, HumanMessage) else "assistant"
             with st.chat_message(role):
                 st.markdown(msg.content)
+                st.caption(self._stamp(times.get(msg.id)))
+
+    def _render_pending_approval(self):
+        """The request to confirm, at the foot of the conversation.
+
+        It cannot come from the history: the graph is suspended inside the
+        deployment agent, which has not returned and so has written nothing.
+        Drawn live instead, it is there for exactly as long as the plan is
+        waiting and goes as soon as the architect answers."""
+        approval = self._approval()
+        if not approval:
+            return
+        with st.chat_message("assistant"):
+            st.markdown(
+                f"[Deployment] {len(approval['operations'])} operation(s) planned on "
+                f"**{approval['platform']}**. Nothing has been written yet.\n\n"
+                "Reply **confirm** to execute, or ask for changes.")
+            st.caption(self._stamp(None))
 
     def _render_jump_to_configuration(self):
         """A way back up to the configuration panel without scrolling."""
@@ -384,6 +428,7 @@ class IoTDeploymentUI:
         self._render_configuration()
         self._render_deployment_plan()
         self._render_history()
+        self._render_pending_approval()
         self._render_jump_to_configuration()
         #the input is the last one after all the graphical rendering
         self._handle_user_interaction()

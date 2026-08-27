@@ -7,6 +7,7 @@ above
 """
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -46,6 +47,11 @@ class PlatformAdapter(ABC):
 
     @abstractmethod
     def create_relation(self, from_id: str, from_type: str, to_id: str, to_type: str) -> None: ...
+
+    def batch(self):
+        """Somewhere to hold a connection open for a run of operations. An
+        adapter with nothing to keep open need not override it"""
+        return nullcontext()
 
     # -- dispatch ---------------------------------------------------------
 

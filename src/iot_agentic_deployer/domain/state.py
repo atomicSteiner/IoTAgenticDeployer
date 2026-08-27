@@ -28,20 +28,23 @@ class IoTDeploymentState(TypedDict, total=False):
     installation: dict          # models.Installation, serialised
     validation_report: dict     # whatever the validation engine last said
     deployment_plan: list       # the operations, in the order they run
-    plan_confirmed: bool        # the architect said go ahead
 
     # Every hand-off and every tool call stays visible (R7).
     trace: Annotated[list, append]
 
     next_node: str
+    pending_nodes: list         # stages still to run for this turn, in order
 
 
 def build_routing_decision(valid_destinations: list[str]) -> Type[BaseModel]:
     return create_model(
         "RoutingDecision",
         response_to_user=(str, Field(description="Message shown to the IoT architect.")),
-        next_node=(
-            Literal[tuple(valid_destinations + ["WaitUser"])],
-            Field(description="Agent to delegate to. 'WaitUser' to stop and await the architect."),
+        # A list, so a message naming two stages gets both. Decided once, on
+        # the way out; the way back just works through it
+        next_nodes=(
+            list[Literal[tuple(valid_destinations + ["WaitUser"])]],
+            Field(description="The stages this message asks for, in the order they run - "
+                              "usually one. ['WaitUser'] to stop and await the architect."),
         ),
     )

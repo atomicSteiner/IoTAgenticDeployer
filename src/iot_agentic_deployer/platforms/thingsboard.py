@@ -74,6 +74,9 @@ class ThingsBoardAdapter(PlatformAdapter):
             )
         return True, f"ThingsBoard reachable through the MCP server at {self.mcp_url}."
 
+    def batch(self):
+        return self._mcp.session()
+
     def create_asset(self, name: str, asset_type: str) -> str:
         # Devices get upserted, a duplicate asset name is refused. Reusing
         # the existing one is what lets an interrupted run be confirmed again
