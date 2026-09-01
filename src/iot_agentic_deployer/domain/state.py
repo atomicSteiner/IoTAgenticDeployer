@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Type
 
 from langgraph.graph.message import add_messages
@@ -18,7 +18,7 @@ def trace(agent: str, action: str, detail: str = "") -> list[dict]:
     same shape, so the trace reads as a single account of the session rather
     than six agents keeping their own notes"""
     return [{"agent": agent, "action": action, "detail": detail,
-             "at": datetime.utcnow().isoformat()}]
+             "at": datetime.now(timezone.utc).isoformat()}]
 
 
 class IoTDeploymentState(TypedDict, total=False):

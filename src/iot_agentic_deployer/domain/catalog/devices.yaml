@@ -1,16 +1,16 @@
-# Device catalogue (thesis 5.2, Table 5.2).
+# Device catalogue
 # Externalised declarative knowledge base: the behaviour of the system can be
 # extended to new equipment by editing this file, without modifying source
-# code (requirement R4).
+# code
 #
 # `default_metadata` provides a provisional value for each entry of
 # `required_metadata`, so that an assignment produces a device that is
 # complete enough to deploy instead of one that validation can only reject.
 # The values are declared here rather than in code, for the same reason as
-# the rest of the catalogue (R4). They are never applied silently: the
+# the rest of the catalogue. They are never applied silently: the
 # configuration agent reports every field it defaulted, and the architect can
 # override any of them, so a default remains a starting point rather than a
-# decision taken on their behalf (thesis 5.3, R2).
+# decision taken on their behalf.
 #
 # `aliases` carries only vocabulary that the rest of the entry cannot already
 # express. What an architect asks for is usually a measurement rather than a

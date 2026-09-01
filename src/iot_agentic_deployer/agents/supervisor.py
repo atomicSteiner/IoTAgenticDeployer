@@ -5,14 +5,18 @@ to it, and turns the result back into one reply. The only agent that talks to
 the architect directly.
 """
 
-from typing import Optional
+from typing import Literal, Optional, get_args
 
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-from iot_agentic_deployer.domain.models import Installation
+from iot_agentic_deployer.domain.models import Installation, SpaceType
 from iot_agentic_deployer.domain.state import IoTDeploymentState, build_routing_decision, trace
 from iot_agentic_deployer.domain.validation import missing_topology_information
+from iot_agentic_deployer.platforms.base import available_platforms
+
+# The whole room vocabulary, so an answer about it cannot be invented
+SPACE_TYPES = tuple(t for t in get_args(SpaceType) if t != "unknown")
 
 # A message asks for one or two things; a longer list is the model running away
 # with it rather than reading it
@@ -20,9 +24,11 @@ MAX_STAGES = 3
 
 AGENT_PURPOSE = {
     "Conceptualisation": "translates the description of the environment into the topology "
-                         "model and asks for what is missing.",
-    "Configuration": "applies the use-case profile, consults the catalogue and associates "
-                     "devices with spaces or access points.",
+                         "model and asks for what is missing. It also owns the building's "
+                         "name: naming or renaming it goes here, never anywhere else.",
+    "Configuration": "applies the use-case profile, consults the catalogue, associates "
+                     "devices with spaces or access points, and sets which platform the "
+                     "installation is to be deployed onto.",
     "Summary": "renders the configuration built so far, in tabular and diagrammatic form.",
     "Validation": "evaluates the topology and profile rules and pronounces on whether the "
                   "model may proceed to deployment.",
@@ -31,15 +37,21 @@ AGENT_PURPOSE = {
 }
 
 GUIDANCE = (
-    "Stages of the activity: describe the building -> Conceptualisation; choose the use case "
-    "and the devices -> Configuration; review -> Summary; check before deploying -> "
+    "Stages of the activity: describe, rename or correct the building -> Conceptualisation; "
+    "choose the use case and the devices -> Configuration; review -> Summary; "
+    "check before deploying -> "
     "Validation; deploy -> Deployment.\n"
     "Asking to deploy is a request for Deployment, and for Deployment alone: it checks the "
     "rules itself, derives the plan, shows it and waits there for the architect to confirm "
     "before writing anything. Do not send a Validation ahead of it - that is the architect's "
-    "to ask for, and it is not what they asked for.\n"
-    "Do not re-delegate a stage that already produced a result, unless the architect asks "
-    "to change or refresh something.\n"
+    "to ask for, and it is not what they asked for. If the message also names a target "
+    "platform other than the current one, Configuration goes first to set it, then "
+    "Deployment: deploying is done on the platform of the model, not on one named in "
+    "passing.\n"
+    "Do not re-delegate a stage merely to repeat what it has already produced. A message "
+    "asking that stage for something new is a new request, and goes to it like any other: "
+    "more devices, a different profile, another target platform. That a stage has run "
+    "before is no reason to withhold what is being asked of it now.\n"
     "Delegate to exactly the stage(s) the architect's message actually asks for, in the "
     "order they run - never a stage they did not request, even if it would logically come "
     "next (e.g. describing the building is not a request to also pick a use case or assign "
@@ -58,9 +70,12 @@ GUIDANCE = (
 # suggestion into their request, or answers it outright. Split, the sentence
 # being translated never sees the message at all
 class MessageLanguage(BaseModel):
-    language: str = Field(description=(
-        "The language this message is written in, named in English "
-        "('Italian', 'Spanish', 'English')."))
+    # A Literal: left free, 'switch the platform to openremote' came back as
+    # language 'OpenRemote', and the hint was translated into pseudo-Finnish.
+    # Anything outside the list falls back to English, which is still true
+    language: Literal[
+        "English", "Italian", "Spanish", "French", "German", "Portuguese", "Dutch"
+    ] = Field(description="The language this message is written in.")
 
 
 # Plain text, not a structured field
@@ -84,7 +99,8 @@ class SupervisorNode:
             "a building and configure an IoT installation on it. You guide the decisions of "
             "the architect, you do not replace them.\n\n"
             f"Specialised agents:\n{agents}\n\n{GUIDANCE}"
-            "If critical information is missing, choose 'WaitUser' and ask for it.\n\n"
+            "If critical information is missing, choose 'WaitUser' and ask for it.\n"
+            "Write response_to_user in the language the architect is writing in.\n\n"
             "You never perform a stage yourself and you never describe an agent's outcome in "
             "response_to_user - only the agent that actually runs may report what it did, in "
             "its own message, on a later step. Your response_to_user must describe only what "
@@ -109,7 +125,14 @@ class SupervisorNode:
             f"Model status: building '{inst.building.name}' modelled with "
             f"{len(inst.building.floors)} floor(s) and {spaces} space(s); "
             f"use case: {inst.use_case or 'not selected'}; "
-            f"{len(inst.all_devices())} device(s) assigned."
+            f"{len(inst.all_devices())} device(s) assigned; "
+            # Nothing else states the target, and asked about it the
+            # supervisor invents one
+            f"target platform: {inst.target.platform} "
+            f"(adapters available: {', '.join(available_platforms())}). "
+            # Asked which room types exist it answered 'reception, restroom,
+            # storage', none of which the model has
+            f"Room types that exist: {', '.join(SPACE_TYPES)}. There are no others."
         )
 
     @staticmethod
@@ -161,6 +184,38 @@ class SupervisorNode:
         except Exception:
             return hint     # a hint is not worth losing the turn over
 
+    def _answer(self, history: list, status: str) -> str:
+        """A message that asks for no stage still deserves an answer, and
+        only the model can give one: the single reply it writes itself.
+
+        A prompt of its own, not the routing one, which orders it to announce
+        the hand-off it is making - and it announced one here too"""
+        return self.llm.invoke(
+            [{"role": "system", "content": (
+                "You help an IoT architect conceptualise a building and configure an IoT "
+                "installation on it. Answer their last message directly, in the language "
+                "they wrote it in, from this conversation and the model status below. "
+                "Nothing whatever happens as a result of this message: no agent runs, "
+                "nothing is created, changed or removed. So do not announce handing over "
+                "to anyone, do not report anything as done, and do not promise anything "
+                "either - no 'I will remove...', no 'I am adding...'. If they asked for "
+                "something to be done, say plainly that it has not been done and ask them "
+                "to say it again.")}]
+            + history + [{"role": "system", "content": status}]).content
+
+    @staticmethod
+    def _queue(decision) -> list[str]:
+        """The stages to run, in order, out of a decision that may be missing
+        altogether. Deployment always ends the queue: it stops on its own
+        interrupt, so anything behind it would run off the back of the
+        architect's confirmation"""
+        if decision is None:
+            return []
+        queue = [node for node in decision.next_nodes if node != "WaitUser"][:MAX_STAGES]
+        if "Deployment" in queue:
+            queue = queue[:queue.index("Deployment") + 1]
+        return queue
+
     def __call__(self, state: IoTDeploymentState) -> dict:
         history = state["messages"]
 
@@ -186,22 +241,36 @@ class SupervisorNode:
                     content=f"💡 Next: {self._phrase(hint, history)}")]
             return result
 
+        status = self._model_status(state)
         messages = (
             [{"role": "system", "content": self.system_prompt}]
             + history
-            + [{"role": "system", "content": self._model_status(state)}]
+            + [{"role": "system", "content": status}]
         )
         decision = self.supervisor_llm.invoke(messages)
+        queue = self._queue(decision)
 
-        queue = [node for node in decision.next_nodes if node != "WaitUser"][:MAX_STAGES]
-        # Deployment stops on its own interrupt: anything queued behind it would
-        # run off the back of the architect's confirmation, unasked
-        if "Deployment" in queue:
-            queue = queue[:queue.index("Deployment") + 1]
+        # No destination is sometimes right and sometimes a miss: one
+        # message in six that plainly asks for a stage came back with
+        # nowhere to send it. Worth asking twice
+        if not queue:
+            second = self.supervisor_llm.invoke(messages)
+            if self._queue(second):
+                decision, queue = second, self._queue(second)
+
+        # Still nobody to delegate to, so response_to_user cannot be shown:
+        # it announces the hand-off it thought it was making. An answer
+        # written knowing no stage follows cannot promise one
+        if not queue:
+            return {
+                "messages": [AIMessage(content=self._answer(history, status))],
+                "next_node": "WaitUser",
+                "trace": trace("Supervisor", "answer", "no stage requested"),
+            }
 
         return {
             "messages": [AIMessage(content=decision.response_to_user)],
-            "next_node": queue[0] if queue else "WaitUser",
+            "next_node": queue[0],
             "pending_nodes": queue[1:],
-            "trace": trace("Supervisor", "delegate", " -> ".join(queue) or "WaitUser"),
+            "trace": trace("Supervisor", "delegate", " -> ".join(queue)),
         }

@@ -1,4 +1,4 @@
-# Use-case profiles (thesis 4.1 Table 4.2, 5.2).
+# Use-case profiles
 # A profile associates a scenario with the device categories it recommends,
 # the metadata it makes mandatory and the rules that determine when an
 # installation of that kind is complete.

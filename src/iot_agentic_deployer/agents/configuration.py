@@ -2,8 +2,6 @@
 
 Applies the use-case profile, reads the catalogue, and puts devices into
 spaces
-The language model only works out what was being asked for; looking devices up
-and placing them is code.
 """
 
 from typing import Literal, Optional, Type
@@ -31,6 +29,13 @@ ACTIONS = (
 # A message asks the configuration for one or two things; a longer list is the
 # model reading intent into the conversation rather than into the message
 MAX_ACTIONS = 3
+
+
+def metadata_keys() -> list[str]:
+    """Read from the catalogue, so a new device type brings its own fields."""
+    return sorted({key for spec in load_device_catalog().values()
+                   for key in (list(spec.get("required_metadata", []))
+                               + list(spec.get("optional_metadata", [])))})
 
 
 def build_configuration_intent(device_ids: list[str], use_cases: list[str]) -> Type[BaseModel]:
@@ -62,10 +67,19 @@ def build_configuration_intent(device_ids: list[str], use_cases: list[str]) -> T
         target_floor_names=(list[str], Field(default_factory=list,
             description="Floors to restrict to, e.g. ['Second floor'] for 'the offices on "
                         "the second floor'. Narrows the spaces above; empty means any floor.")),
-        metadata_key=(Optional[str], Field(default=None,
-            description="Metadata field to set, e.g. 'physical_label' or 'gateway_id'")),
+        # A Literal: left a bare string, 'rename the building to X' arrived
+        # here as metadata_key 'building_name', written onto a device
+        metadata_key=(Optional[Literal[tuple(metadata_keys()) or ("physical_label",)]], Field(
+            default=None,
+            description="Which metadata field of the devices to set. These belong to "
+                        "devices, never to the building, a floor or a room.")),
         metadata_value=(Optional[str], Field(default=None, description="Value to set it to")),
-        platform=(Optional[str], Field(default=None)),
+        # A Literal for the same reason: a bare string was answered with a
+        # platform nobody has an adapter for
+        platform=(Optional[Literal[tuple(available_platforms()) or ("thingsboard",)]], Field(
+            default=None,
+            description="The platform to deploy onto, when the architect names one "
+                        "('deploy on openremote' -> openremote).")),
         exclusion_rule=(Optional[str], Field(default=None, description="Rule being excluded")),
         exclusion_scope=(Optional[str], Field(
             default=None, description="Space name, or 'installation'")),
@@ -91,9 +105,43 @@ class ConfigurationNode:
 
     def __init__(self, llm):
         # the output will be structure as the intent model we defined
+        self.intents_model = build_configuration_intents(
+            list(load_device_catalog()), list(load_use_cases()))
+        # include_raw: a value outside a Literal comes back to be mended,
+        # instead of an exception that costs the whole turn
         self.intent_llm = llm.with_structured_output(
-            build_configuration_intents(list(load_device_catalog()), list(load_use_cases())),
-            method="function_calling")
+            self.intents_model, method="function_calling", include_raw=True)
+
+    def _repair(self, result: dict, named: list[str]):
+        """What the model answered, with the values it invented put right.
+
+        A device outside the catalogue becomes the one the architect named,
+        but only for an assignment: a removal with no device already means
+        every device, and mending it into a real one removes nothing. Other
+        Literals fall back to empty; an action cannot be guessed, so that
+        entry goes"""
+        calls = getattr(result.get("raw"), "tool_calls", None) or []
+        if not calls:
+            return []
+        allowed = {"use_case": tuple(load_use_cases()),
+                   "device_type_id": tuple(load_device_catalog()),
+                   "platform": tuple(available_platforms()),
+                   "metadata_key": tuple(metadata_keys())}
+
+        mended = []
+        for entry in calls[0].get("args", {}).get("actions", []):
+            if entry.get("action") not in ACTIONS:
+                continue
+            for field, values in allowed.items():
+                if entry.get(field) is not None and entry[field] not in values:
+                    guessable = (field == "device_type_id" and named
+                                 and entry["action"] == "assign_devices")
+                    entry[field] = named[0] if guessable else None
+            mended.append(entry)
+        try:
+            return self.intents_model(actions=mended).actions
+        except ValidationError:
+            return []
 
     def __call__(self, state: IoTDeploymentState) -> dict:
         inst = Installation(**state.get("installation", {}))
@@ -124,32 +172,33 @@ class ConfigurationNode:
             "'remove/clear/delete the devices' -> remove_devices; 'remove all devices' means "
             "no device_type_id and no target spaces (every device, everywhere).\n"
         )}] + state["messages"]
-        #now we have the intents, in the order they are to be applied
-        # The catalogue id is a Literal, and nested inside a list the model
-        # misses it more often than it did on its own, which takes the whole
-        # turn down with a schema error. One more go, then say so
-        try:
-            actions = self.intent_llm.invoke(prompt).actions
-        except ValidationError:
-            try:
-                actions = self.intent_llm.invoke(prompt).actions
-            except ValidationError:
-                return {"messages": [AIMessage(content=(
-                    "[Configuration] I could not tell which catalogue device you meant. "
-                    "Name it as the catalogue does, or ask to see what is available."))],
-                    "trace": trace("Configuration", "intent_unreadable", "")}
+        # The devices the architect named: what settles which assignment was
+        # meant, and what a value outside the catalogue is mended with
+        said = next((m.content for m in reversed(state["messages"])
+                     if isinstance(m, HumanMessage)), "")
+        named = [device_id for device_id, _ in match_device_types(said)]
 
-        # One of each kind, kept in the order they came. Asked for a list, the
-        # model will gladly emit assign_devices twice for a single request, the
-        # second time with the targets left empty, and equip every room in the
-        # building: doing less than was asked can be asked for again, doing more
-        # is the architect undoing it by hand
-        seen, intents = set(), []
+        #now we have the intents, in the order they are to be applied
+        result = self.intent_llm.invoke(prompt)
+        actions = result["parsed"].actions if result["parsed"] else self._repair(result, named)
+        if not actions:
+            return {"messages": [AIMessage(content=(
+                "[Configuration] I could not tell which catalogue device you meant. "
+                "Name it as the catalogue does, or ask to see what is available."))],
+                "trace": trace("Configuration", "intent_unreadable", "")}
+
+        # One of each kind, in the order the kinds first came. The model
+        # emits assign_devices several times for one request, and the extra
+        # ones put back what the same message asked to remove, so the
+        # assignment that survives is the one whose device was named
+        chosen = {}
         for intent in actions:
-            if intent.action not in seen:
-                seen.add(intent.action)
-                intents.append(intent)
-        intents = intents[:MAX_ACTIONS]
+            held = chosen.get(intent.action)
+            if held is None or (intent.action == "assign_devices"
+                                and held.device_type_id not in named
+                                and intent.device_type_id in named):
+                chosen[intent.action] = intent
+        intents = list(chosen.values())[:MAX_ACTIONS]
 
         handlers = {
             "select_use_case": self._select_use_case,

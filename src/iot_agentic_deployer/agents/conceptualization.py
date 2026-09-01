@@ -220,12 +220,20 @@ def _to_building(extracted: TopologyBuilding, previous: Optional[Building]) -> B
 
 
 class ConceptualisationIntent(BaseModel):
-    action: Literal["describe_topology", "list_space_types"] = Field(description=(
-        "'describe_topology' when the architect is describing, correcting or refining the "
-        "building itself (floors, rooms, corridors, quantities). 'list_space_types' when "
-        "they are only asking what room/space types or vocabulary is available, without "
-        "describing anything new about their own building."
-    ))
+    action: Literal["describe_topology", "list_space_types", "rename_building"] = Field(
+        description=(
+            "'describe_topology' when the architect is describing, correcting or refining the "
+            "building itself (floors, rooms, corridors, quantities). 'list_space_types' when "
+            "they are only asking what room/space types or vocabulary is available, without "
+            "describing anything new about their own building. 'rename_building' when the "
+            "message only gives the building a different name and changes nothing else: "
+            "'rename the building to X', 'call the building X', 'it is actually called X'."
+        ))
+    # A field of its own: read back out of a fresh extraction the name was
+    # missed whenever the verb was a weak one ('call it X')
+    new_name: Optional[str] = Field(default=None, description=(
+        "For rename_building only: the name the building is to have from now on. Just the "
+        "name itself, not the old one and not the words asking for the change."))
 
 
 class ConceptualisationNode:
@@ -267,11 +275,51 @@ class ConceptualisationNode:
             return extracted
         return None
 
+    def _rename_building(self, inst: Installation, new_name: Optional[str]) -> dict:
+        """Writes the new name, and nothing else.
+
+        A rename used to go through the extractor, so one string cost a full
+        re-reading of the building and rebuilt the whole model from it. Here
+        the name arrives as a field, so there is nothing else to get wrong"""
+        if not inst.building:
+            return {
+                "messages": [AIMessage(content=(
+                    "[Conceptualisation] There is no building to rename yet. Describe it "
+                    "first, and it can be called whatever you like."))],
+                "trace": trace("Conceptualisation", "rename_building", "no building"),
+            }
+        if not (new_name or "").strip():
+            return {
+                "messages": [AIMessage(content=(
+                    f"[Conceptualisation] The building is called "
+                    f"'{inst.building.name}'. What should it be called instead?"))],
+                "trace": trace("Conceptualisation", "rename_building", "no name given"),
+            }
+
+        previous = inst.building.name
+        inst.building.name = new_name.strip()
+        # Named after the building until the architect names it itself,
+        # exactly as when it was first described
+        if inst.name in {"unnamed-installation", _derived_installation_name(previous)}:
+            inst.name = _derived_installation_name(inst.building.name)
+
+        return {
+            "installation": inst.model_dump(),
+            "messages": [AIMessage(content=(
+                f"[Conceptualisation] The building is now called "
+                f"**{inst.building.name}**, and nothing else has changed.\n\n"
+                + installation_to_markdown(inst)))],
+            "trace": trace("Conceptualisation", "rename_building",
+                           f"'{previous}' -> '{inst.building.name}'"),
+        }
+
     def __call__(self, state: IoTDeploymentState) -> dict:
         inst = Installation(**state.get("installation", {}))
 
         intent = self.intent_llm.invoke(
             [{"role": "system", "content": self.intent_prompt}] + state["messages"])
+        if intent.action == "rename_building":
+            return self._rename_building(inst, intent.new_name)
         if intent.action == "list_space_types":
             types = ", ".join(f"`{t}`" for t in get_args(SpaceType) if t != "unknown")
             return {

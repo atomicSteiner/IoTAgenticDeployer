@@ -1,6 +1,6 @@
 """Validation agent: checks the model against the minimal
 topology rules and whatever profile is in force, then says whether it can go
-to deployment. No LLM involved."""
+to deployment"""
 
 
 from langchain_core.messages import AIMessage

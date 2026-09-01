@@ -35,3 +35,6 @@ dev = [
 [tool.uv.build-backend]
 module-name = "iot_agentic_deployer"
 source-include = ["langgraph.json", ".env.example", "Makefile", "tests/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

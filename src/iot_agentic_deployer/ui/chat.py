@@ -1,4 +1,4 @@
-"""The chat interface (thesis 5.5).
+"""The chat interface
 
 Where the architect describes the building, answers questions, looks at
 summaries, reads through the planned operations and confirms the deployment -
@@ -7,7 +7,7 @@ and where earlier configurations can be reopened and carried on with.
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -96,7 +96,7 @@ class IoTDeploymentUI:
         session_id = str(uuid.uuid4())
         st.session_state.sessions_index[session_id] = {
             "title": "New configuration",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         st.session_state.active_session_id = session_id
         _save_sessions_index(st.session_state.sessions_index)
@@ -206,7 +206,7 @@ class IoTDeploymentUI:
             self._render_status()
 
     def _render_status(self):
-        """Which platform, and whether it is ready - so the architect can see
+        """Which platform, and whether it is ready: so the architect can see
         where things stand without running the check again"""
         values = self._values()
         inst = Installation(**values.get("installation", {}))
@@ -322,15 +322,15 @@ class IoTDeploymentUI:
 
     # -- interaction ------------------------------------------------------
 
-    def _run_turn(self, user_input: str) -> str | None:
+    def _run_turn(self, user_input: str, on_step=None) -> str | None:
         import traceback
         try:
             # A plan waiting on the architect turns the next message into the
             # answer to it. Reading that answer is the deployment agent's job,
             # so it goes through untouched
             if self.workflow.pending_approval(self._session):
-                return self.workflow.resume(self._session, user_input)
-            return self.workflow.run_turn(self._session, user_input)
+                return self.workflow.resume(self._session, user_input, on_step)
+            return self.workflow.run_turn(self._session, user_input, on_step)
         except BaseExceptionGroup as eg:
             st.error("Workflow error: " + "; ".join(
                 f"{type(sub).__name__}: {sub}" for sub in eg.exceptions))
@@ -409,8 +409,24 @@ class IoTDeploymentUI:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            with st.spinner("The supervisor is delegating…"):
-                reply = self._run_turn(user_input)
+            # A turn can be several agents long and some take a while: say
+            # which is running rather than spinning anonymously for all
+            # Answering a plan resumes inside Deployment, so no supervisor
+            # step comes first to name what is running
+            with st.status("Reading your answer…" if self._approval()
+                           else "The supervisor is delegating…") as status:
+                def step(entry):
+                    agent, action = entry.get("agent"), entry.get("action")
+                    if agent == "Supervisor":
+                        # 'Configuration -> Validation': the first is next up
+                        going = (entry.get("detail") or "").split(" -> ")[0]
+                        status.update(label=f"Running {going}…"
+                                      if going != "WaitUser" else "Finishing…")
+                    else:
+                        status.write(f"**{agent}** · {action}")
+                reply = self._run_turn(user_input, on_step=step)
+                status.update(label="Done" if reply else "Failed",
+                              state="complete" if reply else "error")
             if reply is None:
                 return
             st.markdown(reply)

@@ -19,7 +19,7 @@ from langgraph.types import Command
 
 # Importing this runs its @register_adapter, which is what makes the platform
 # selectable by name through get_adapter/available_platforms.
-from iot_agentic_deployer.platforms import thingsboard  # noqa: F401
+from iot_agentic_deployer.platforms import openremote, thingsboard  # noqa: F401
 
 
 from iot_agentic_deployer.agents.conceptualization import ConceptualisationNode
@@ -47,9 +47,9 @@ class IoTAgenticWorkflow:
             max_tokens=8192,
         )
 
-        # Routing is one small call per turn, and now has to break a message
-        # down into an ordered list of stages. Worth a model of its own when
-        # the cheap one struggles; unset, it is the same model as everything else
+        # Routing is one small call per turn, and now breaks a message into
+        # an ordered list of stages: worth a model of its own when the cheap
+        # one struggles. Unset, it is the same model as everything else
         self.router_llm = ChatOpenAI(
             base_url="https://openrouter.ai/api/v1",
             model=os.getenv("ROUTER_MODEL") or os.getenv("OPENAI_MODEL"),
@@ -111,23 +111,34 @@ class IoTAgenticWorkflow:
         return {"configurable": {"thread_id": session_id}}
 
     #one full turn: feed the message in, let the graph run to a stop, return the last reply
-    def run_turn(self, session_id: str, user_input: str) -> str:
-        final = None
-        for event in self.system.stream(
+    def run_turn(self, session_id: str, user_input: str, on_step=None) -> str:
+        return self._drain(self.system.stream(
             {"messages": [HumanMessage(content=user_input)]},
-            config=self._config(session_id), stream_mode="values",
-        ):
-            final = event
+            config=self._config(session_id), stream_mode="values"), on_step)
+
+    @staticmethod
+    def _drain(events, on_step) -> str:
+        """Runs the graph to its next stop, handing each step to `on_step` as
+        it lands: a turn is several agents long now, and the caller has to be
+        able to say where it has got to"""
+        final, reported = None, None
+        for final in events:
+            steps = final.get("trace") or []
+            if on_step:
+                # The first event is the state before anything ran, so its
+                # last entry is the previous turn's. Report what this turn
+                # adds, and all of it: one agent can log several steps at once
+                reported = len(steps) if reported is None else reported
+                for entry in steps[reported:]:
+                    on_step(entry)
+                reported = len(steps)
         return final["messages"][-1].content
 
     #answers the interrupt the deployment agent is waiting on, and lets the graph carry on
-    def resume(self, session_id: str, value) -> str:
-        final = None
-        for event in self.system.stream(Command(resume=value),
-                                        config=self._config(session_id),
-                                        stream_mode="values"):
-            final = event
-        return final["messages"][-1].content
+    def resume(self, session_id: str, value, on_step=None) -> str:
+        return self._drain(self.system.stream(Command(resume=value),
+                                              config=self._config(session_id),
+                                              stream_mode="values"), on_step)
 
     #the payload of the interrupt waiting on the architect, if there is one
     def pending_approval(self, session_id: str) -> dict | None:
