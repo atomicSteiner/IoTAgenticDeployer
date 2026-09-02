@@ -1,0 +1,72 @@
+#   docker compose -f docker-compose.openremote.yaml up -d
+services:
+
+  openremote:
+    image: openremote/manager:latest
+    container_name: openremote
+    restart: unless-stopped
+    depends_on:
+      - openremote-postgres
+      - openremote-keycloak
+    environment:
+      - OR_HOSTNAME=localhost
+      - OR_ADMIN_PASSWORD=secret
+      - OR_DB_HOST=openremote-postgres
+      - OR_KEYCLOAK_HOST=openremote-keycloak
+      # Keycloak signs tokens as https://localhost/auth/...; left at -1 the
+      # manager expects an http issuer and refuses every one of them
+      - OR_SSL_PORT=443
+      - OR_SETUP_TYPE=
+    ports:
+      # What the adapter talks to: plain HTTP, no proxy in the way
+      - "8080:8080"
+
+  # For the browser only. The console wants Keycloak on its own origin, and
+  # the Keycloak client OpenRemote sets up accepts exactly one address to
+  # return to: https://localhost. The certificate is self-signed and made on
+  # first start, so nothing of the sort ends up in the repository
+  openremote-proxy:
+    image: nginx:alpine
+    container_name: openremote-proxy
+    restart: unless-stopped
+    depends_on:
+      - openremote
+      - openremote-keycloak
+    volumes:
+      - ./openremote-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - openremote-certs:/certs
+    # One line on purpose: folded over several, YAML turns the continuations
+    # into separate commands and openssl never runs
+    command: ["sh", "-c", "apk add --no-cache openssl >/dev/null 2>&1; [ -f /certs/tls.crt ] || openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj /CN=localhost -keyout /certs/tls.key -out /certs/tls.crt >/dev/null 2>&1; exec nginx -g 'daemon off;'"]
+    ports:
+      - "443:443"
+
+  openremote-keycloak:
+    image: openremote/keycloak:latest
+    container_name: openremote-keycloak
+    restart: unless-stopped
+    depends_on:
+      - openremote-postgres
+    environment:
+      - KEYCLOAK_ADMIN_PASSWORD=secret
+      - KC_DB_URL_HOST=openremote-postgres
+      # Without a hostname it refuses to start in production mode, and it
+      # wants a bare host: given a URL, this version prefixes the scheme again
+      # and builds links to a host literally called 'https'. The scheme comes
+      # from the proxy's X-Forwarded-Proto instead
+      - KC_HOSTNAME=localhost
+      - KC_HOSTNAME_STRICT=false
+      - KC_PROXY=edge
+    ports:
+      - "8081:8080"
+
+  openremote-postgres:
+    image: openremote/postgresql:latest
+    container_name: openremote-postgres
+    restart: unless-stopped
+    volumes:
+      - openremote-data:/var/lib/postgresql/data
+
+volumes:
+  openremote-data:
+  openremote-certs:
