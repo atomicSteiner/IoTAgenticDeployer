@@ -1,9 +1,6 @@
-"""Validation engine
-
-Plain code on purpose: completeness and consistency are decided against the
-catalogue and the profile, never left to the language model. What comes out
-as missing here is what conceptualisation turns into questions
-"""
+"""Validation engine, plain code on purpose: completeness and consistency are
+decided against the catalogue and the profile, never left to the model. What
+comes out as missing is what conceptualisation turns into questions."""
 from iot_agentic_deployer.domain.catalog.loader import load_device_catalog, load_use_cases, GATEWAY_CATEGORIES
 from iot_agentic_deployer.domain.models import Installation
 

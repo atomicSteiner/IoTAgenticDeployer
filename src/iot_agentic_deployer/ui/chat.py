@@ -1,9 +1,6 @@
-"""The chat interface
-
-Where the architect describes the building, answers questions, looks at
-summaries, reads through the planned operations and confirms the deployment -
-and where earlier configurations can be reopened and carried on with.
-"""
+"""The chat interface: where the architect describes the building, answers
+questions, reads summaries and planned operations and confirms the deployment
+- and where earlier configurations are reopened and carried on with."""
 
 import json
 import uuid
@@ -60,12 +57,9 @@ def get_workflow() -> IoTAgenticWorkflow:
 
 
 class IoTDeploymentUI:
-    """Streamlit front end for the workflow, with more than one session.
-
-    A session is just a `thread_id`. The checkpointer holds its whole
-    configuration, so all this class keeps is which session is open and a
-    small index of titles for the sidebar.
-    """
+    """Streamlit front end for the workflow, with more than one session. A
+    session is just a `thread_id`: the checkpointer holds its configuration, so
+    this class keeps only which one is open and an index of sidebar titles."""
 
     def __init__(self, page_title: str = "IoT Agentic Deployer", icon: str = "⚙️"):
         self.page_title = page_title
@@ -325,9 +319,8 @@ class IoTDeploymentUI:
     def _run_turn(self, user_input: str, on_step=None) -> str | None:
         import traceback
         try:
-            # A plan waiting on the architect turns the next message into the
-            # answer to it. Reading that answer is the deployment agent's job,
-            # so it goes through untouched
+            # A plan waiting on the architect turns the next message into its
+            # answer; reading that is the deployment agent's job, so it passes through
             if self.workflow.pending_approval(self._session):
                 return self.workflow.resume(self._session, user_input, on_step)
             return self.workflow.run_turn(self._session, user_input, on_step)
@@ -350,12 +343,9 @@ class IoTDeploymentUI:
                 st.caption(self._stamp(times.get(msg.id)))
 
     def _render_pending_approval(self):
-        """The request to confirm, at the foot of the conversation.
-
-        It cannot come from the history: the graph is suspended inside the
-        deployment agent, which has not returned and so has written nothing.
-        Drawn live instead, it is there for exactly as long as the plan is
-        waiting and goes as soon as the architect answers."""
+        """The request to confirm, at the foot of the conversation. It cannot
+        come from the history - the graph is suspended inside the deployment
+        agent - so it is drawn live, for as long as the plan is waiting."""
         approval = self._approval()
         if not approval:
             return
@@ -409,10 +399,8 @@ class IoTDeploymentUI:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            # A turn can be several agents long and some take a while: say
-            # which is running rather than spinning anonymously for all
-            # Answering a plan resumes inside Deployment, so no supervisor
-            # step comes first to name what is running
+            # A turn can be several agents long, so name the one running rather
+            # than spin anonymously. A resumed plan starts inside Deployment
             with st.status("Reading your answer…" if self._approval()
                            else "The supervisor is delegating…") as status:
                 def step(entry):

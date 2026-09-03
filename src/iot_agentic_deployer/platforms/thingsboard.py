@@ -1,9 +1,6 @@
-"""ThingsBoard adapter
-
-Carries out the operations planning produced, through the official
-ThingsBoard MCP server. Everything ThingsBoard-specific stops here (tool
-names, payload shapes, the ways an id comes back), so nothing above knows it
-"""
+"""ThingsBoard adapter: carries out the operations planning produced, through
+the official ThingsBoard MCP server. Everything ThingsBoard-specific stops
+here (tool names, payload shapes, how an id comes back)."""
 
 import json
 import os
@@ -36,10 +33,9 @@ class ThingsBoardAdapter(PlatformAdapter):
 
     @staticmethod
     def _check(tool: str, result):
-        """The MCP tools do not fail on error, they return the problem: a
-        dict with status ERROR, or a bare string where an entity should have
-        been. Miss it and a refused operation is marked completed with a
-        None id, so every shape becomes an exception here"""
+        """The MCP tools do not fail on error, they return the problem: a dict
+        with status ERROR, or a bare string where an entity should be. Missed,
+        a refused operation is marked completed - so both become exceptions"""
         if isinstance(result, dict) and str(result.get("status", "")).upper() == "ERROR":
             raise ThingsBoardError(f"{tool}: {result.get('message') or result}")
         if isinstance(result, str):
@@ -78,9 +74,8 @@ class ThingsBoardAdapter(PlatformAdapter):
         return self._mcp.session()
 
     def create_asset(self, name: str, asset_type: str) -> str:
-        # Devices get upserted, a duplicate asset name is refused. Reusing
-        # the existing one is what lets an interrupted run be confirmed again
-        # without colliding with the assets it already created
+        # Devices get upserted, a duplicate asset name is refused: reusing the
+        # existing one lets an interrupted run be confirmed again
         existing = self._lookup("getTenantAsset", assetName=name)
         if existing:
             return existing["id"]["id"]

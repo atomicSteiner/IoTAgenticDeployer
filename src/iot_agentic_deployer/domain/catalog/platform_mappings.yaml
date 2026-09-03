@@ -1,0 +1,41 @@
+# How each platform names the things the model holds.
+# Indexed by platform and not by device
+#
+#   spatial   what a building, floor, space and access point are called
+#   devices   what each catalogue entry is called, and whether the platform
+#             holds it as a device of its own or as one more asset
+
+platforms:
+
+  thingsboard:
+    spatial:
+      building: building
+      floor: floor
+      space: space
+      access_point: access_point
+    devices:
+      dipme.monitoring_safety_multisensor: {entity: device, profile: multisensor, type: multisensor}
+      generic.environmental_sensor:        {entity: device, profile: default, type: environmental_sensor}
+      dipme.people_counter:                {entity: device, profile: default, type: people_counter}
+      dipme.structural_early_warning:      {entity: device, profile: default, type: early_warning}
+      dipme.edge_gateway:                  {entity: device, profile: default, type: gateway, is_gateway: true}
+      dipme.coordinator:                   {entity: device, profile: default, type: coordinator}
+      generic.ups:                         {entity: device, profile: default, type: ups}
+
+  # Everything is an asset here, devices included, and there is no floor in
+  # the vocabulary: a floor holds whatever the architect put on it, while a
+  # GroupAsset is a set of assets of one type and insists on saying which
+  openremote:
+    spatial:
+      building: BuildingAsset
+      floor: ThingAsset
+      space: RoomAsset
+      access_point: ThingAsset
+    devices:
+      dipme.monitoring_safety_multisensor: {entity: asset, asset_type: PresenceSensorAsset}
+      generic.environmental_sensor:        {entity: asset, asset_type: EnvironmentSensorAsset}
+      dipme.people_counter:                {entity: asset, asset_type: PeopleCounterAsset}
+      dipme.structural_early_warning:      {entity: asset, asset_type: VibrationSensorAsset}
+      dipme.edge_gateway:                  {entity: asset, asset_type: GatewayAsset}
+      dipme.coordinator:                   {entity: asset, asset_type: GatewayAsset}
+      generic.ups:                         {entity: asset, asset_type: ElectricityStorageAsset}

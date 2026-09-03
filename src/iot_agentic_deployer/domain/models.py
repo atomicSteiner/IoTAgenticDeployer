@@ -1,8 +1,6 @@
-"""Conceptual model of an IoT installation 
-Things sit inside each other like this:
-    Tenant -> Installation -> Building -> Floor -> Space -> AccessPoint
-and a device belongs to whichever Space or AccessPoint it is installed in.
-"""
+"""Conceptual model of an IoT installation, nested as
+Tenant -> Installation -> Building -> Floor -> Space -> AccessPoint, with each
+device belonging to whichever Space or AccessPoint it is installed in."""
 
 from typing import Literal, Optional
 

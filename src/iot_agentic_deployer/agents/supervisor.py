@@ -1,9 +1,6 @@
-"""Supervisor
-
-Works out which stage of the activity the architect is asking for, hands off
-to it, and turns the result back into one reply. The only agent that talks to
-the architect directly.
-"""
+"""Supervisor: works out which stage of the activity the architect is asking
+for, hands off to it and turns the result back into one reply. The only agent
+that talks to the architect directly."""
 
 from typing import Literal, Optional, get_args
 
@@ -26,9 +23,10 @@ AGENT_PURPOSE = {
     "Conceptualisation": "translates the description of the environment into the topology "
                          "model and asks for what is missing. It also owns the building's "
                          "name: naming or renaming it goes here, never anywhere else.",
-    "Configuration": "applies the use-case profile, consults the catalogue, associates "
-                     "devices with spaces or access points, and sets which platform the "
-                     "installation is to be deployed onto.",
+    "Configuration": "holds the device catalogue and answers what it offers, applies the "
+                     "use-case profile, associates devices with spaces or access points, "
+                     "models a door on a room that already exists, and sets which platform "
+                     "the installation is to be deployed onto.",
     "Summary": "renders the configuration built so far, in tabular and diagrammatic form.",
     "Validation": "evaluates the topology and profile rules and pronounces on whether the "
                   "model may proceed to deployment.",
@@ -38,7 +36,12 @@ AGENT_PURPOSE = {
 
 GUIDANCE = (
     "Stages of the activity: describe, rename or correct the building -> Conceptualisation; "
-    "choose the use case and the devices -> Configuration; review -> Summary; "
+    "choose, add, remove or change the use case, the devices or the target platform "
+    "-> Configuration; review -> Summary; "
+    "Doors, entrances and passages belong to both: a description of the building that "
+    "mentions them is Conceptualisation, but adding or removing one on rooms already "
+    "modelled ('give every classroom a back door') is Configuration, which does it "
+    "without re-reading the whole building. "
     "check before deploying -> "
     "Validation; deploy -> Deployment.\n"
     "Asking to deploy is a request for Deployment, and for Deployment alone: it checks the "
@@ -58,37 +61,32 @@ GUIDANCE = (
     "devices). Most messages ask for one stage; name a second only when the message asks "
     "for that too ('assign the sensors, then validate'). When in doubt, choose WaitUser "
     "and ask, rather than guessing ahead on the architect's behalf.\n"
-    "If the architect is asking a question about the process itself - what to do next, what "
-    "options they have, for advice or an opinion - rather than describing, deciding or "
-    "requesting a stage, that is not a delegation: choose WaitUser and answer the question "
-    "directly, grounded in the Model status below.\n"
+    "A question about the catalogue - which devices exist, which are available, what the "
+    "profile recommends, what a given device measures or what it is installed on - is a "
+    "request for Configuration, which holds the catalogue and answers out of it. Never "
+    "answer one yourself: the Model status below does not list the devices, so anything "
+    "you say about them is invented.\n"
+    "If the architect is asking a question about the process itself - what to do next, "
+    "which stage comes next, for advice or an opinion - rather than describing, deciding "
+    "or requesting a stage, that is not a delegation: choose WaitUser and answer the "
+    "question directly, grounded in the Model status below.\n"
 )
 
 
-# Naming the language and translating are two calls, not one: shown the
-# architect's message and the suggestion together, the model rewrites the
-# suggestion into their request, or answers it outright. Split, the sentence
-# being translated never sees the message at all
+# Which language the architect writes in. Established rather than asked for,
+# and read by the agent that composes the reply
 class MessageLanguage(BaseModel):
     # A Literal: left free, 'switch the platform to openremote' came back as
-    # language 'OpenRemote', and the hint was translated into pseudo-Finnish.
-    # Anything outside the list falls back to English, which is still true
+    # language 'OpenRemote'. Anything outside the list falls back to English
     language: Literal[
         "English", "Italian", "Spanish", "French", "German", "Portuguese", "Dutch"
     ] = Field(description="The language this message is written in.")
-
-
-# Plain text, not a structured field
-TRANSLATOR = ("You are a translator. Reply with the translation and nothing else: no "
-              "preamble, no alternatives, no quotation marks, no explanation.")
 
 
 class SupervisorNode:
 
     def __init__(self, llm, valid_destinations: list[str], router_llm=None):
         self.llm = llm
-        self.language_llm = llm.with_structured_output(
-            MessageLanguage, method="function_calling")
         self.valid_destinations = valid_destinations
         self.supervisor_llm = (router_llm or llm).with_structured_output(
             build_routing_decision(valid_destinations), method="function_calling")
@@ -166,30 +164,10 @@ class SupervisorNode:
 
         return None
 
-    def _phrase(self, hint: str, history: list) -> str:
-        """Which step comes next is still read off the stored model; only the
-        wording is the LLM's, so the suggestion comes back in whatever
-        language the architect is writing in"""
-        asked = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
-        try:
-            language = self.language_llm.invoke(
-                [{"role": "user", "content": asked.content if asked else "hello"}]).language
-            if language.strip().lower().startswith("english"):
-                return hint
-            said = self.llm.invoke([
-                {"role": "system", "content": TRANSLATOR},
-                {"role": "user", "content": f"Translate into {language}: {hint}"},
-            ]).content.strip()
-            return said or hint
-        except Exception:
-            return hint     # a hint is not worth losing the turn over
-
     def _answer(self, history: list, status: str) -> str:
-        """A message that asks for no stage still deserves an answer, and
-        only the model can give one: the single reply it writes itself.
-
-        A prompt of its own, not the routing one, which orders it to announce
-        the hand-off it is making - and it announced one here too"""
+        """A message that asks for no stage still deserves an answer, and only
+        the model can give one. A prompt of its own, not the routing one, which
+        orders it to announce a hand-off - and it announced one here too"""
         return self.llm.invoke(
             [{"role": "system", "content": (
                 "You help an IoT architect conceptualise a building and configure an IoT "
@@ -207,8 +185,7 @@ class SupervisorNode:
     def _queue(decision) -> list[str]:
         """The stages to run, in order, out of a decision that may be missing
         altogether. Deployment always ends the queue: it stops on its own
-        interrupt, so anything behind it would run off the back of the
-        architect's confirmation"""
+        interrupt, so anything behind it would run off the confirmation"""
         if decision is None:
             return []
         queue = [node for node in decision.next_nodes if node != "WaitUser"][:MAX_STAGES]
@@ -222,10 +199,8 @@ class SupervisorNode:
         # If the last message is an agent's rather than the architect's, an
         # agent has just run and we're on the way back
         if history and not isinstance(history[-1], HumanMessage):
-            # An agent has just finished. Whatever else the architect's message
-            # asked for was decided on the way out and is waiting here, so take
-            # it rather than ask a model again: deciding twice about the same
-            # message is how the supervisor used to report work that never ran
+            # Whatever else the message asked for was decided on the way out and
+            # waits here: deciding twice is how work that never ran got reported
             pending = state.get("pending_nodes") or []
             if pending:
                 return {"next_node": pending[0], "pending_nodes": pending[1:],
@@ -235,10 +210,8 @@ class SupervisorNode:
                 "next_node": "WaitUser",
                 "trace": trace("Supervisor", "delegate", "WaitUser"),
             }
-            hint = self._next_step_hint(state)
-            if hint:
-                result["messages"] = [AIMessage(
-                    content=f"💡 Next: {self._phrase(hint, history)}")]
+            # No message of its own here: Response composes the whole turn,
+            # the hint included, once every agent it asked for has run
             return result
 
         status = self._model_status(state)
@@ -250,25 +223,28 @@ class SupervisorNode:
         decision = self.supervisor_llm.invoke(messages)
         queue = self._queue(decision)
 
-        # No destination is sometimes right and sometimes a miss: one
-        # message in six that plainly asks for a stage came back with
-        # nowhere to send it. Worth asking twice
+        # No destination is sometimes right and sometimes a miss: one message
+        # in six that plainly asks for a stage came back empty. Worth a retry
         if not queue:
             second = self.supervisor_llm.invoke(messages)
             if self._queue(second):
                 decision, queue = second, self._queue(second)
 
-        # Still nobody to delegate to, so response_to_user cannot be shown:
-        # it announces the hand-off it thought it was making. An answer
-        # written knowing no stage follows cannot promise one
+        # Still nobody to delegate to, so response_to_user cannot be shown: it
+        # announces a hand-off that is not happening. Answer afresh instead
         if not queue:
             return {
-                "messages": [AIMessage(content=self._answer(history, status))],
+                # Named, unlike the hand-off line below: Response knows an
+                # agent's prose by that prefix and drops anything without one
+                "messages": [AIMessage(
+                    content=f"[Supervisor] {self._answer(history, status)}")],
                 "next_node": "WaitUser",
                 "trace": trace("Supervisor", "answer", "no stage requested"),
             }
 
         return {
+            # Kept for the trace and for what follows to read; Response takes
+            # it out of the transcript, so there is nothing to translate
             "messages": [AIMessage(content=decision.response_to_user)],
             "next_node": queue[0],
             "pending_nodes": queue[1:],

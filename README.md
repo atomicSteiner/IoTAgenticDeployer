@@ -8,7 +8,7 @@ expressed in natural language, and the low-level provisioning operations
 required on an IoT platform. A supervising agent decomposes the activity into
 sub-tasks and delegates them to specialised agents, which build a model of the
 installation, select devices from a catalogue, validate the result and deploy
-it onto a specific platform (ThingsBoard, at the moment).
+it onto the platform the architect chose (ThingsBoard or OpenRemote at the moment).
 
 ## Requirements
 
@@ -29,13 +29,34 @@ OPENAI_API_KEY="sk-or-..."
 OPENAI_MODEL="google/gemini-2.5-flash-lite"
 ```
 
-Two variables are optional: `ROUTER_MODEL` uses a different model for the
-supervisor's routing decision alone, falling back to `OPENAI_MODEL`, and
-`THINGSBOARD_MCP_URL` overrides `http://localhost:8000/sse`.
+Optional, all falling back to a working default:
+
+| Variable | Effect |
+|---|---|
+| `ROUTER_MODEL` | A different model for the supervisor's routing decision alone |
+| `RESPONSE_MODEL` | A different model for the single reply the architect reads |
+| `THINGSBOARD_MCP_URL` | Overrides `http://localhost:8000/sse` |
+| `OPENREMOTE_URL` | Overrides `http://localhost:8080` |
+| `OPENREMOTE_AUTH_URL` | Overrides `http://localhost:8081/auth` |
+| `OPENREMOTE_REALM` | Overrides `master` |
+| `OPENREMOTE_CLIENT_ID`, `OPENREMOTE_CLIENT_SECRET` | Credentials of an OpenRemote service user; required to deploy there |
+
+The two model overrides exist because those two calls are the ones a weaker
+model handles worst: routing decides who runs, and the reply is the only text
+the architect actually reads.
 
 ## Usage
 
-Start the target platform and the MCP server:
+Start the interface, from the project root:
+
+```bash
+uv run streamlit run src/iot_agentic_deployer/main.py
+```
+
+The conversation, the model and the validation work with no platform running.
+One is needed only to deploy.
+
+### ThingsBoard
 
 ```bash
 cd src/iot_agentic_deployer
@@ -49,18 +70,27 @@ ThingsBoard takes a few minutes on first boot; once it responds on
 docker compose restart mcp-server
 ```
 
-Start the interface:
+Credentials: `tenant@thingsboard.org` / `tenant`.
+
+### OpenRemote
 
 ```bash
-uv run streamlit run main.py
+cd src/iot_agentic_deployer
+docker compose -f docker-compose.openremote.yaml up -d
 ```
 
-ThingsBoard credentials: `tenant@thingsboard.org` / `tenant`.
+The manager answers on `localhost:8080` and Keycloak on `localhost:8081`.
+Create a service user in the realm and put its client id and secret in `.env`:
+deployment authenticates before it does anything, so an unreachable or
+unauthenticated platform stops the run before a single entity is written.
+
+### A session
 
 Describe the building, choose a use case, assign devices, ask for a validation
 check, then ask to deploy. Deployment shows the operations it would perform and
 stops there: it writes nothing until the architect replies in the chat to
 confirm. Configurations are kept between sessions and listed in the sidebar.
+
 
 ## Architecture
 
@@ -69,25 +99,27 @@ confirm. Configurations are kept between sessions and listed in the sidebar.
 | Conversational user interface | Where the architect describes, reviews and confirms |
 | Orchestration graph | Supervisor and specialised agents as nodes of a stateful graph |
 | Configuration state store | Model and checkpoints, persisted across steps and sessions |
-| Device catalogue | Declarative knowledge about device types and use-case profiles |
+| Device catalogue | Declarative knowledge about device types, profiles and platform naming |
 | Validation engine | Minimal topology rules and rules of the active profile |
 | Platform adapters | Provisioning capabilities of each platform, as typed operations |
-| Target IoT platform | ThingsBoard, adopted as reference target |
+| Target IoT platform | ThingsBoard and OpenRemote |
 
 The supervisor delegates to five specialised agents: **conceptualisation**
 (builds the topology model and requests missing information), **configuration**
-(applies the profile and associates devices with spaces), **summary** (renders
-the configuration), **validation** (evaluates the rules) and **deployment**
-(derives and executes the platform operations).
+(applies the profile, associates devices with spaces and access points, and
+models the ways in), **summary** (renders the configuration), **validation**
+(evaluates the rules) and **deployment** (derives and executes the platform
+operations).
+
+A sixth node, **response**, is never delegated to: it runs once the turn is
+over and composes everything the turn produced into the single reply the
+architect reads, in their language, with the renderings the code built left
+untouched.
 
 A message that asks for more than one stage gets all of them: the supervisor
 decides the whole sequence once, and the graph works through it without asking
 again. Deployment always ends a sequence, because it suspends on the plan and
 waits for the architect.
-
-The language model is used only to recognise intent and to extract structure.
-Catalogue lookup, device assignment, validation and planning are deterministic
-code.
 
 ## Requirements coverage
 
@@ -106,18 +138,26 @@ and the architect's reply resumes it. An interrupted run picks up where it
 stopped, since operations are identified by the model rather than by the run,
 and what already succeeded is not attempted again (R7).
 
+The second platform is what tests the boundary (R6). OpenRemote has neither a
+device entity nor a relation entity: everything is an asset, and containment is
+the child's own `parentId`. The plan above the adapter does not know and does
+not change — `create_relation` simply updates the child instead. What each
+platform calls what the model holds lives in `platform_mappings.yaml`, in its
+own file rather than in every catalogue entry, so a third target does not mean
+editing them all.
+
 ## Project structure
 
 ```
-agents/            one module per agent
+agents/            one module per agent, plus response.py
 domain/            conceptual model and validation engine
-domain/catalog/    devices.yaml, use_cases.yaml and their loader
-platforms/         planning, adapter contract, ThingsBoard adapter
+domain/catalog/    devices.yaml, use_cases.yaml, platform_mappings.yaml, loader
+platforms/         planning, adapter contract, ThingsBoard and OpenRemote adapters
 rendering/         tables and diagrams built from the model
 ui/                Streamlit interface
 workflow.py        orchestration graph
 ```
 
-Device types and use-case profiles are declared in YAML under
-`domain/catalog/`: supporting new equipment does not require modifying the
-source code (R4).
+Device types, use-case profiles and per-platform naming are declared in YAML
+under `domain/catalog/`: supporting new equipment, a new profile or a new
+target does not require modifying the source code (R4).

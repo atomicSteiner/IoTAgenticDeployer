@@ -1,10 +1,6 @@
-"""Platform adapters
-
-Each supported platform exposes what it can provision as a set of typed
+"""Platform adapters: each platform exposes what it can provision as typed
 operations. Keeping the platform-specific parts behind that boundary is what
-lets another platform be added without redesigning the configuration layer
-above
-"""
+lets another platform be added without redesigning the layer above."""
 
 from abc import ABC, abstractmethod
 from contextlib import nullcontext

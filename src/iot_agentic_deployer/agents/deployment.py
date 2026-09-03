@@ -1,15 +1,6 @@
-"""Deployment agent.
-
-Two phases, following the SAIBA split:
-
-  planning     check the platform answers, work out the operations, show
-               them, and stop there;
-  realisation  once the architect confirms, run them and report back.
-
-Execution can be picked up again where it left off: anything already done is
-not repeated, so one failure can be sorted out and retried without throwing
-away the work that succeeded
-"""
+"""Deployment agent, in two phases following the SAIBA split: planning checks
+the platform, derives the operations, shows them and stops; realisation runs
+them once confirmed. A resumed run picks up without repeating what succeeded."""
 
 
 from typing import Literal
@@ -27,9 +18,8 @@ from iot_agentic_deployer.rendering.formatting import validation_to_markdown
 
 
 class ConfirmationAnswer(BaseModel):
-    # Worded flatly on purpose. Phrased as "'yes' ONLY when..." followed by a
-    # list of refusals, a cautious model reads the caveats and answers no even
-    # to the word 'confirm'
+    # Worded flatly on purpose: phrased as "'yes' ONLY when..." plus a list of
+    # refusals, a cautious model answers no even to the word 'confirm'
     answer: Literal["yes", "no"] = Field(description=(
         "yes = the message approves executing the plan now, in any language "
         "('confirm', 'yes', 'ok', 'go ahead', 'procedi'). "
@@ -43,17 +33,15 @@ class DeploymentNode:
         # Options passed to the adapter factory (endpoint, credentials).
         self.adapter_options = adapter_options or {}
         # The one thing this agent asks a model: whether the answer to its own
-        # interruption point was a go-ahead. Planning, validation and execution
-        # stay plain code. Two Literals, so the answer cannot be a third thing
+        # interrupt was a go-ahead. Two Literals, so it cannot be a third thing
         self.confirm_llm = llm and llm.with_structured_output(
             ConfirmationAnswer, method="function_calling")
 
     def __call__(self, state: IoTDeploymentState) -> dict:
         inst = Installation(**state.get("installation", {}))
 
-        # Everything above the interrupt runs again when the architect
-        # answers, so rules and operations are always re-established against
-        # the model as it stands, not as it stood when the plan was shown
+        # Everything above the interrupt runs again when the architect answers,
+        # so rules and operations follow the model as it stands now
         planned = self._plan(inst)
         if "deployment_plan" not in planned:      # not valid, or unreachable
             return planned
@@ -88,10 +76,9 @@ class DeploymentNode:
     @staticmethod
     def _carry_completed(previous: list[PlatformOperation],
                          current: list[PlatformOperation]) -> list[PlatformOperation]:
-        """Because op_ids come from the model, anything created under an
-        earlier plan keeps the same identity in a freshly derived one: so
-        work that's already done carries over instead of being attempted
-        twice"""
+        """op_ids come from the model, so anything created under an earlier
+        plan keeps its identity in a freshly derived one: work already done
+        carries over instead of being attempted twice"""
         completed = {op.op_id: op for op in previous if op.status == "completed"}
         for op in current:
             if op.op_id in completed:

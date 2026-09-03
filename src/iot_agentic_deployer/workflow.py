@@ -1,9 +1,6 @@
-"""Orchestration graph
-
-The supervisor and the specialised agents as nodes of a stateful graph: this
-decides who runs when, and where the architect gets consulted. The flow goes
-in circles on purpose and whatever was built up in the meantime survives the trip back.
-"""
+"""Orchestration graph: the supervisor and the specialised agents as nodes of
+a stateful graph deciding who runs when. The flow goes in circles on purpose,
+and whatever was built up in the meantime survives the trip back."""
 
 import os
 import sqlite3
@@ -25,6 +22,7 @@ from iot_agentic_deployer.platforms import openremote, thingsboard  # noqa: F401
 from iot_agentic_deployer.agents.conceptualization import ConceptualisationNode
 from iot_agentic_deployer.agents.configuration import ConfigurationNode
 from iot_agentic_deployer.agents.deployment import DeploymentNode
+from iot_agentic_deployer.agents.response import ResponseNode
 from iot_agentic_deployer.agents.summary import SummaryNode
 from iot_agentic_deployer.agents.supervisor import SupervisorNode
 from iot_agentic_deployer.agents.validation import ValidationNode
@@ -40,21 +38,27 @@ class IoTAgenticWorkflow:
             base_url="https://openrouter.ai/api/v1",
             model=os.getenv("OPENAI_MODEL"),
             api_key=os.getenv("OPENAI_API_KEY"),
-            # The largest thing we ever ask for is a topology: ~2k tokens for
-            # five floors, ~9k for a very large building. You pay for what is
-            # generated, not for the ceiling, so this only has to be high
-            # enough not to cut an extraction in half
+            # A topology is the largest request: ~2k tokens for five floors,
+            # ~9k for a big building. You pay for what is generated, not the ceiling
             max_tokens=8192,
         )
 
-        # Routing is one small call per turn, and now breaks a message into
-        # an ordered list of stages: worth a model of its own when the cheap
-        # one struggles. Unset, it is the same model as everything else
+        # Routing is one small call per turn that breaks a message into ordered
+        # stages: worth its own model. Unset, it is the same as everything else
         self.router_llm = ChatOpenAI(
             base_url="https://openrouter.ai/api/v1",
             model=os.getenv("ROUTER_MODEL") or os.getenv("OPENAI_MODEL"),
             api_key=os.getenv("OPENAI_API_KEY"),
             max_tokens=1024,
+        )
+
+        # The reply is the one thing the architect reads, so a weaker model's
+        # inventions land there. Unset, it is the same as everything else
+        self.response_llm = ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            model=os.getenv("RESPONSE_MODEL") or os.getenv("OPENAI_MODEL"),
+            api_key=os.getenv("OPENAI_API_KEY"),
+            max_tokens=2048,
         )
 
         # Where the configuration lives: keeps the model and its checkpoints
@@ -76,6 +80,9 @@ class IoTAgenticWorkflow:
         self.nodes = {
             "Supervisor": SupervisorNode(llm=self.llm, router_llm=self.router_llm,
                                          valid_destinations=list(self.agents)),
+            # Never delegated to: it runs once the turn is over. Keeping it out
+            # of `agents` keeps it out of the supervisor's destinations
+            "Response": ResponseNode(llm=self.response_llm),
             **self.agents,
         }
 
@@ -90,19 +97,21 @@ class IoTAgenticWorkflow:
         for name, node in self.nodes.items():
             self.workflow.add_node(name, node)
 
-    #where to go after the supervisor: an agent, or stop and wait for the architect
+    #where to go after the supervisor: an agent, or the reply that ends the turn
     def _router(self, state: IoTDeploymentState) -> str:
         destination = state.get("next_node", "WaitUser")
-        return END if destination == "WaitUser" else destination
+        return "Response" if destination == "WaitUser" else destination
 
     #supervisor -> agent (chosen by the router), and every agent back to the supervisor
     def _setup_edges(self):
         self.workflow.set_entry_point("Supervisor")
         routing_map = {name: name for name in self.agents}
-        routing_map[END] = END
+        routing_map["Response"] = "Response"
         self.workflow.add_conditional_edges("Supervisor", self._router, routing_map)
         for name in self.agents:
             self.workflow.add_edge(name, "Supervisor")
+        # The turn ends with the reply, never by falling out of the supervisor
+        self.workflow.add_edge("Response", END)
 
     # -- session API ------------------------------------------------------
 
@@ -125,9 +134,8 @@ class IoTAgenticWorkflow:
         for final in events:
             steps = final.get("trace") or []
             if on_step:
-                # The first event is the state before anything ran, so its
-                # last entry is the previous turn's. Report what this turn
-                # adds, and all of it: one agent can log several steps at once
+                # The first event predates this turn, so report only what it
+                # adds - and all of it: one agent can log several steps at once
                 reported = len(steps) if reported is None else reported
                 for entry in steps[reported:]:
                     on_step(entry)

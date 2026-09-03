@@ -40,6 +40,21 @@ def devices_for_use_case(use_case: str | None) -> list[dict]:
     return [catalog[d] for d in recommended if d in catalog]
 
 
+def load_platform_mappings() -> dict:
+    """How each platform names what the model holds, indexed by platform. Its
+    own file rather than a block per catalogue entry: that grew as devices
+    times platforms, and a third target meant editing all of them"""
+    data = yaml.safe_load(
+        (CATALOG_DIR / "platform_mappings.yaml").read_text(encoding="utf-8"))
+    return data.get("platforms", {})
+
+
 def platform_mapping(device_type_id: str, platform: str) -> dict:
-    spec = load_device_catalog().get(device_type_id, {})
-    return spec.get("platform_mapping", {}).get(platform, {})
+    """What this platform calls this device, or nothing when it has no name
+    for it - which is a configuration gap, not something to guess at"""
+    return load_platform_mappings().get(platform, {}).get("devices", {}).get(device_type_id, {})
+
+
+def spatial_mapping(platform: str) -> dict:
+    """What this platform calls a building, a floor, a space and a door."""
+    return load_platform_mappings().get(platform, {}).get("spatial", {})

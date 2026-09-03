@@ -1,6 +1,8 @@
 """Rendering helpers, all plain code. Nothing here goes near the LLM: tables
 and diagrams are built in Python so they always come out well-formed.
 """
+from collections import Counter
+
 from iot_agentic_deployer.domain.catalog.loader import load_device_catalog
 from iot_agentic_deployer.domain.models import Installation
 
@@ -36,11 +38,8 @@ def installation_to_mermaid(inst: Installation) -> str:
             for dev in space.devices:
                 lines += _device_node(dev, s_id)
 
-            # Access points hang off their space, and anything installed on
-            # one hangs off the door rather than the room. A people counter
-            # belongs to the doorway it watches, and the picture should say
-            # so - the same distinction the model and the deployment plan
-            # both make (thesis 5.1).
+            # Access points hang off their space, and devices installed on one
+            # hang off the door, not the room - as model and plan do (5.1).
             for ap in space.access_points:
                 ap_id = f"A_{_sanitize(floor.name)}_{_sanitize(space.name)}_{_sanitize(ap.name)}"
                 lines.append(f'    {ap_id}{{{{"🚪 {ap.name}"}}}}')
@@ -71,24 +70,37 @@ def installation_to_markdown(inst: Installation) -> str:
         + (f" ({inst.building.location})" if inst.building.location else "") + "  ",
         f"**Use case:** {inst.use_case or '_not selected_'}",
         "",
-        "| Floor | Space | Type | Devices |",
-        "| --- | --- | --- | --- |",
+        "| Floor | Space | Type | Devices | Ways in |",
+        "| --- | --- | --- | --- | --- |",
     ]
 
     for floor, space in inst.iter_spaces():
-        if space.devices:
-            names = ", ".join(
-                catalog.get(d.device_type_id, {}).get("display_name", d.device_type_id)
-                for d in space.devices
-            )
-        else:
-            names = "_none_"
-        lines.append(f"| {floor.name} | {space.name} | {space.type} | {names} |")
+        # The ways in are a column of their own, devices and all: a counter on
+        # a door was in the model and in the diagram, and nowhere in the table
+        ways = ", ".join(
+            ap.name + (f" ({_device_names(ap.devices, catalog)})" if ap.devices else "")
+            for ap in space.access_points
+        )
+        lines.append(f"| {floor.name} | {space.name} | {space.type} "
+                     f"| {_device_names(space.devices, catalog) or '_none_'} "
+                     f"| {ways or '_none_'} |")
 
     total_spaces = sum(1 for _ in inst.iter_spaces())
+    ways_in = sum(len(space.access_points) for _, space in inst.iter_spaces())
     lines.append("")
-    lines.append(f"_{total_spaces} space(s), {len(inst.all_devices())} device(s) configured._")
+    lines.append(f"_{total_spaces} space(s), {ways_in} way(s) in, "
+                 f"{len(inst.all_devices())} device(s) configured._")
     return "\n".join(lines)
+
+
+def _device_names(devices, catalog: dict) -> str:
+    """Counted, not listed: three of one type in a room would otherwise read as
+    the same name written out three times"""
+    counted = Counter(
+        catalog.get(d.device_type_id, {}).get("display_name", d.device_type_id)
+        for d in devices
+    )
+    return ", ".join(n if c == 1 else f"{n} x{c}" for n, c in counted.items())
 
 
 def validation_to_markdown(report: dict) -> str:

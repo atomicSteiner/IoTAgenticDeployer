@@ -1,30 +1,14 @@
-"""OpenRemote adapter
-
-The platform that puts the boundary to the test: it has neither a device
-entity nor a relation entity. Everything is an asset, and containment is the
-child's own parentId, so `create_relation` creates nothing and updates the
-child instead. The plan above does not know, and does not change.
-
-`scope` and `entity_type` are ThingsBoard's vocabulary, which planning still
-speaks: ignored here on purpose, and a truer account of how far the
-abstraction reaches than renaming them everywhere would be
-"""
+"""OpenRemote adapter, the platform that tests the boundary: everything is an
+asset and containment is the child's parentId, so `create_relation` updates
+the child instead. ThingsBoard's `scope`/`entity_type` are ignored here."""
 
 import os
 
 import requests
 
+from iot_agentic_deployer.domain.catalog.loader import spatial_mapping
 from iot_agentic_deployer.platforms.base import PlatformAdapter, register_adapter
 
-# Planning names the spatial levels; OpenRemote names asset types. A floor is
-# not a GroupAsset: that is a set of assets of one type and insists on saying
-# which. OpenRemote has no floor, so it falls back to the generic thing
-SPATIAL_TYPES = {
-    "building": "BuildingAsset",
-    "floor": "ThingAsset",
-    "space": "RoomAsset",
-    "access_point": "ThingAsset",
-}
 FALLBACK_TYPE = "ThingAsset"
 
 TIMEOUT = 20
@@ -110,9 +94,8 @@ class OpenRemoteAdapter(PlatformAdapter):
 
     def check_reachability(self) -> tuple[bool, str]:
         try:
-            # Authenticate first: reading is allowed without a token, so a
-            # query alone would call it reachable and then fail on the first
-            # write, halfway through the plan
+            # Authenticate first: reading needs no token, so a query alone would
+            # call it reachable and then fail on the first write
             self._authenticate()
             self._call("POST", "/asset/query", json={"limit": 1})
         except Exception as e:
@@ -126,12 +109,9 @@ class OpenRemoteAdapter(PlatformAdapter):
         return True, f"OpenRemote reachable at {self.endpoint} (realm '{self.realm}')."
 
     def _required_attributes(self, asset_type: str) -> dict:
-        """What this asset type will not be created without.
-
-        A BuildingAsset wants a postal code, a PeopleCounterAsset seven
-        counters. The model above knows none of that and must not invent it,
-        so they are declared and left empty. Read from the manager, so a new
-        device type needs no change here"""
+        """What this asset type will not be created without. The model above
+        knows none of it and must not invent it, so the attributes are declared
+        empty; read from the manager, so a new device type needs no change"""
         if self._model is None:
             self._model = {
                 info["assetDescriptor"]["name"]: {
@@ -148,7 +128,9 @@ class OpenRemoteAdapter(PlatformAdapter):
         if existing:
             return existing["id"]
 
-        kind = SPATIAL_TYPES.get(asset_type, asset_type)
+        # Planning names the spatial levels, the mapping names the asset
+        # types: what a floor is called lives with the platform, not here
+        kind = spatial_mapping(self.name).get(asset_type, asset_type)
         created = self._call("POST", "/asset", json={
             "name": name,
             "type": kind,
@@ -165,10 +147,9 @@ class OpenRemoteAdapter(PlatformAdapter):
 
     def set_attributes(self, entity_id: str, entity_type: str, scope: str,
                        attributes: dict) -> None:
-        """The whole asset, not one attribute at a time: writing an attribute
-        the type never declared is refused, and ours are the model's own
-        metadata, which no OpenRemote type has heard of. Declared as text on
-        the asset they go through, and what landed stays traceable"""
+        """The whole asset, not one attribute at a time: an attribute the type
+        never declared is refused, and ours are the model's own metadata.
+        Declared as text on the asset they go through, and stay traceable"""
         if not attributes:
             return
         asset = self._call("GET", f"/asset/{entity_id}")

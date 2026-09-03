@@ -12,11 +12,9 @@ def append(left: list, right: list) -> list:
 
 
 def trace(agent: str, action: str, detail: str = "") -> list[dict]:
-    """One line for the activity trace, ready to drop into state['trace']
-
-    Every agent writes down what it was asked for and what came of it, in the
-    same shape, so the trace reads as a single account of the session rather
-    than six agents keeping their own notes"""
+    """One line for the activity trace, ready for state['trace']: every agent
+    records what it was asked and what came of it in the same shape, so the
+    trace reads as one account of the session rather than six sets of notes"""
     return [{"agent": agent, "action": action, "detail": detail,
              "at": datetime.now(timezone.utc).isoformat()}]
 
@@ -39,12 +37,12 @@ class IoTDeploymentState(TypedDict, total=False):
 def build_routing_decision(valid_destinations: list[str]) -> Type[BaseModel]:
     return create_model(
         "RoutingDecision",
-        response_to_user=(str, Field(description="Message shown to the IoT architect.")),
-        # A list, so a message naming two stages gets both. Decided once, on
-        # the way out; the way back just works through it
+        # Routing first, message second: fields are written in declaration
+        # order, so stages get chosen before a reply can rationalise them
         next_nodes=(
             list[Literal[tuple(valid_destinations + ["WaitUser"])]],
             Field(description="The stages this message asks for, in the order they run - "
                               "usually one. ['WaitUser'] to stop and await the architect."),
         ),
+        response_to_user=(str, Field(description="Message shown to the IoT architect.")),
     )

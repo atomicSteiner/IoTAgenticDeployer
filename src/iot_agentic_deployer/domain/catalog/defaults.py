@@ -5,13 +5,16 @@ from iot_agentic_deployer.domain.catalog.loader import GATEWAY_CATEGORIES, load_
 from iot_agentic_deployer.domain.models import Installation
 
 
-def device_instance_name(spec: dict, floor, space, access_point=None) -> str:
-    """What a device instance gets called. Built from where it sits, so it
-    comes out the same every time the plan is derived again."""
-    parts = [spec["category"], floor.name, space.name]
+def device_instance_name(spec: dict, floor, space, access_point=None,
+                         index: int = 1) -> str:
+    """What a device instance gets called, built from where it sits so it comes
+    out the same every time. `index` tells apart several of one type in one
+    room; the first keeps the bare name, so nothing already deployed moves"""
+    parts = [spec["device_type_id"].replace(".", "_"), floor.name, space.name]
     if access_point is not None:
         parts.append(access_point.name)
-    return "-".join(parts).replace(" ", "_")
+    name = "-".join(parts).replace(" ", "_")
+    return name if index <= 1 else f"{name}-{index}"
 
 
 def find_gateway(inst: Installation) -> str | None:
@@ -25,13 +28,10 @@ def find_gateway(inst: Installation) -> str | None:
 
 
 def resolve_default_metadata(spec: dict, inst: Installation, floor, space,
-                             access_point=None) -> tuple[dict, list[str]]:
-    """Fills in the catalogue's default_metadata templates from the model.
-
-    Hands back what it managed to work out, and separately the keys it
-    couldn't. Those get left empty rather than stuffed with a placeholder -
-    usually gateway_id, when there's no gateway yet: so validation still
-    reports the gap instead of the model carrying a value that means nothing"""
+                             access_point=None, index: int = 1) -> tuple[dict, list[str]]:
+    """Fills the catalogue's default_metadata templates from the model, handing
+    back what it resolved and, separately, the keys it could not. Those stay
+    empty rather than hold a placeholder, so validation still reports the gap"""
     values = {
         "building": inst.building.name if inst.building else "",
         "floor": floor.name,
@@ -50,4 +50,9 @@ def resolve_default_metadata(spec: dict, inst: Installation, floor, space,
         except KeyError:
             # Nothing to put in the placeholder, so leave the field empt
             unresolved.append(key)
+
+    # The label is what a human reads off the device, so where a room holds
+    # several of one type it has to say which of them this is
+    if index > 1 and "physical_label" in resolved:
+        resolved["physical_label"] = f"{resolved['physical_label']} {index}"
     return resolved, unresolved

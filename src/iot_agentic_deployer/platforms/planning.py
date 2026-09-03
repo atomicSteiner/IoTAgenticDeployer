@@ -1,11 +1,10 @@
-"""Behaviour planning
+"""Behaviour planning: works out the operations that would realise the
+configuration, without running any of them, so the architect can read what is
+about to happen."""
 
-Works out the operations that would realise the configuration, without
-running any of them, so the architect can read what is about to happen.
-
-"""
-
-from iot_agentic_deployer.domain.catalog.loader import load_device_catalog
+from iot_agentic_deployer.domain.catalog.loader import (
+    load_device_catalog, platform_mapping,
+)
 from iot_agentic_deployer.domain.models import Installation
 from iot_agentic_deployer.platforms.base import PlatformOperation
 
@@ -38,13 +37,9 @@ def _relation(op_id: str, parent_op: str, parent_kind: str,
 
 
 def derive_plan(inst: Installation) -> list[PlatformOperation]:
-    """Turns the installation into an ordered list of platform operations.
-
-    They come out in containment order (building, floors, spaces, access
-    points, devices), so nothing refers to a parent that does not exist yet.
-    op_ids come from the model rather than being generated, so planning the
-    same configuration twice gives the same ids and a retry still finds what
-    an earlier run created"""
+    """Turns the installation into platform operations, in containment order so
+    nothing refers to a parent that does not exist yet. op_ids come from the
+    model, so planning twice gives the same ids and a retry finds its work"""
     if not inst.building:
         return []
 
@@ -116,10 +111,10 @@ def _device_operations(device, parent_op: str, parent_kind: str, parent_name: st
     """Everything needed to create one device and hang it off whatever it
     is installed in"""
     spec = catalog.get(device.device_type_id, {})
-    mapping = spec.get("platform_mapping", {}).get(platform, {})
+    mapping = platform_mapping(device.device_type_id, platform)
     display_name = spec.get("display_name", device.device_type_id)
 
-    # The catalogue decides device or asset, so one model fits both
+    # The mapping decides device or asset, so one model fits both
     as_asset = mapping.get("entity") == "asset"
     device_op = f"device:{device.instance_name}"
 

@@ -46,9 +46,6 @@ devices:
       gateway_id: "{gateway}"
     telemetry_model: [temperature, humidity, co2, pressure, acceleration]
     command_model: [set_mode, trigger_selftest]
-    platform_mapping:
-      thingsboard: {entity: device, profile: multisensor, type: multisensor}
-      openremote:  {entity: asset, asset_type: PresenceSensorAsset}
 
   - device_type_id: generic.environmental_sensor
     display_name: Environmental Sensor
@@ -64,9 +61,6 @@ devices:
       gateway_id: "{gateway}"
     telemetry_model: [temperature, humidity, co2]
     command_model: []
-    platform_mapping:
-      thingsboard: {entity: device, profile: default, type: environmental_sensor}
-      openremote:  {entity: asset, asset_type: EnvironmentSensorAsset}
 
   - device_type_id: dipme.people_counter
     display_name: People Counter
@@ -82,9 +76,6 @@ devices:
       gateway_id: "{gateway}"
     telemetry_model: [count_in, count_out, occupancy]
     command_model: [reset_counter]
-    platform_mapping:
-      thingsboard: {entity: device, profile: default, type: people_counter}
-      openremote:  {entity: asset, asset_type: PeopleCounterAsset}
 
   - device_type_id: dipme.structural_early_warning
     display_name: Structural Early-Warning Device
@@ -99,9 +90,6 @@ devices:
       gateway_id: "{gateway}"
     telemetry_model: [vibration, displacement, alarm_state]
     command_model: [arm, disarm]
-    platform_mapping:
-      thingsboard: {entity: device, profile: default, type: early_warning}
-      openremote:  {entity: asset, asset_type: VibrationSensorAsset}
 
   - device_type_id: dipme.edge_gateway
     display_name: Edge Gateway
@@ -116,9 +104,6 @@ devices:
       pan_id: "0x1A2B"
     telemetry_model: [uptime, connected_devices]
     command_model: [reboot]
-    platform_mapping:
-      thingsboard: {entity: device, profile: default, type: gateway, is_gateway: true}
-      openremote:  {entity: asset, asset_type: GatewayAsset}
 
   - device_type_id: dipme.coordinator
     display_name: Network Coordinator
@@ -133,9 +118,6 @@ devices:
       pan_id: "0x1A2B"
     telemetry_model: [uptime]
     command_model: []
-    platform_mapping:
-      thingsboard: {entity: device, profile: default, type: coordinator}
-      openremote:  {entity: asset, asset_type: GatewayAsset}
 
   - device_type_id: generic.ups
     display_name: Uninterruptible Power Supply
@@ -149,6 +131,3 @@ devices:
       physical_label: "{space} UPS"
     telemetry_model: [battery_level, mains_present]
     command_model: []
-    platform_mapping:
-      thingsboard: {entity: device, profile: default, type: ups}
-      openremote:  {entity: asset, asset_type: ElectricityStorageAsset}

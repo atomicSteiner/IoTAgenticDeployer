@@ -1,10 +1,6 @@
-"""Conceptualisation agent
-
-Turns the architect's description of a building into the topology model. Each
-new description refines the same model rather than starting a new one, and
-whatever the completeness rules say is still missing becomes a question to
-ask back.
-"""
+"""Conceptualisation agent: turns the architect's description of a building
+into the topology model. Each description refines the same model rather than
+starting a new one, and what the rules find missing becomes a question back."""
 
 import re
 from typing import Literal, Optional, get_args
@@ -80,6 +76,19 @@ def _mentioned(text: str, patterns) -> bool:
     return any(re.search(rf"\b{p}", text) for p in patterns)
 
 
+class Mentioned(BaseModel):
+    """What the architect's own words name, in whatever language: the patterns
+    above only know English, so 'tre aule' left every room untyped. This reads
+    the same evidence in any language"""
+    space_types: list[SpaceType] = Field(description=(
+        "Every room type the message itself names. 'three classrooms and an office' "
+        "-> ['classroom', 'office']; 'tre aule e un ufficio' -> the same. Empty when "
+        "the message names no room type at all. Never a type merely implied."))
+    access_points: bool = Field(description=(
+        "True only when the message names doors, entrances, exits, gates or "
+        "passages of its own accord."))
+
+
 def _same_shape(extracted: TopologyBuilding, previous: Optional[Building]) -> bool:
     """True when the extraction has the same floors, and the same rooms per
     floor, as the model already held."""
@@ -89,13 +98,21 @@ def _same_shape(extracted: TopologyBuilding, previous: Optional[Building]) -> bo
                for pf, ef in zip(previous.floors, extracted.floors))
 
 
-def _ground(extracted: TopologyBuilding, said: str,
-            previous: Optional[Building]) -> tuple[TopologyBuilding, int, int]:
-    """Throws away anything the architect never actually said.
+def _ground(extracted: TopologyBuilding, said: str, previous: Optional[Building],
+            mentioned: Optional["Mentioned"] = None) -> tuple[TopologyBuilding, int, int]:
+    """Throws away anything the architect never said: only their own words and
+    what the model already held count. Returns the cleaned extraction plus how
+    much was dropped; `mentioned` reads those words in any language."""
 
-    Only their own words count, plus whatever the model already held(no inventions)
-    Returns the cleaned extraction and how much was dropped, so the trace can show it.
-    """
+    def named_type(space_type: str) -> bool:
+        if mentioned is not None:
+            return space_type in mentioned.space_types
+        return _mentioned(said, TYPE_EVIDENCE.get(space_type, ()))
+
+    def named_access_points() -> bool:
+        if mentioned is not None:
+            return mentioned.access_points
+        return _mentioned(said, ACCESS_POINT_EVIDENCE)
 
     #search for known types and access points, indexed by name AND by position
     said = said.lower()
@@ -118,13 +135,13 @@ def _ground(extracted: TopologyBuilding, said: str,
                 here = (fi, si)
             #a type different from unknown survive only if is mentioned in text
             if (space.type != "unknown"
-                    and not _mentioned(said, TYPE_EVIDENCE.get(space.type, ()))
+                    and not named_type(space.type)
                     and known_types.get(here) != space.type):
                 space.type = "unknown"
                 dropped_types += 1
             #also the access points
             if (space.access_points
-                    and not _mentioned(said, ACCESS_POINT_EVIDENCE)
+                    and not named_access_points()
                     and here not in known_aps):
                 dropped_aps += len(space.access_points)
                 space.access_points = []
@@ -249,6 +266,7 @@ class ConceptualisationNode:
         )
 
         self.modeller = llm.with_structured_output(TopologyBuilding, method="function_calling")
+        self.mentions_llm = llm.with_structured_output(Mentioned, method="function_calling")
         self.system_prompt = (
             "Extract a structured building topology from the description given by the "
             "architect. You are modelling spatial structure only - never equipment: any "
@@ -261,6 +279,21 @@ class ConceptualisationNode:
             "- Preserve the structure already established: refine the existing model rather "
             "than replacing it.\n"
         )
+
+    def _mentions(self, said: str) -> Optional[Mentioned]:
+        """Reads the evidence out of the architect's words. None when the call
+        fails, and grounding falls back to the English patterns: a worse
+        reading than a translated one, but the one it always had"""
+        try:
+            return self.mentions_llm.invoke([
+                {"role": "system", "content": (
+                    "List the room types this message names, and whether it names any "
+                    "door or entrance. Report only what it says, in any language, never "
+                    "what it suggests.")},
+                {"role": "user", "content": said},
+            ])
+        except Exception:
+            return None
 
     def _extract(self, context: list, had_floors: bool) -> Optional[TopologyBuilding]:
         """Runs the extraction, and refuses to hand back a result that would
@@ -276,11 +309,9 @@ class ConceptualisationNode:
         return None
 
     def _rename_building(self, inst: Installation, new_name: Optional[str]) -> dict:
-        """Writes the new name, and nothing else.
-
-        A rename used to go through the extractor, so one string cost a full
-        re-reading of the building and rebuilt the whole model from it. Here
-        the name arrives as a field, so there is nothing else to get wrong"""
+        """Writes the new name, and nothing else. A rename used to go through
+        the extractor, rebuilding the whole model from one string; here the
+        name arrives as a field, so there is nothing else to get wrong"""
         if not inst.building:
             return {
                 "messages": [AIMessage(content=(
@@ -348,20 +379,18 @@ class ConceptualisationNode:
         # Only the architect's own words can justify a door or a room type
         said = " ".join(m.content for m in state["messages"]
                         if isinstance(m, HumanMessage))
-        extracted, dropped_types, dropped_aps = _ground(extracted, said, inst.building)
+        extracted, dropped_types, dropped_aps = _ground(
+            extracted, said, inst.building, self._mentions(said))
 
         previous_building_name = inst.building.name if inst.building else None
         devices_before = len(inst.all_devices())
         inst.building = _to_building(extracted, inst.building)
-        # Devices are meant to survive a re-description untouched. If any did
-        # not, old and new could not be matched up - a rename the position
-        # fallback could not cover - and that must not pass in silence, which
-        # is exactly how this went unnoticed for so long
+        # Devices must survive a re-description untouched: if any did not, old
+        # and new could not be matched up, and that must not pass in silence
         orphaned = devices_before - len(inst.all_devices())
 
-        # The installation is named after the building until the architect
-        # gives it a name of its own; from then on it keeps that name, and a
-        # later building rename leaves it alone.
+        # The installation is named after the building until it gets a name of
+        # its own; from then on a building rename leaves it alone.
         still_derived = {"unnamed-installation"}
         if previous_building_name:
             still_derived.add(_derived_installation_name(previous_building_name))

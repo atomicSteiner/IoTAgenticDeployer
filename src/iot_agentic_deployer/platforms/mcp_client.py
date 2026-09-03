@@ -9,11 +9,9 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 
 
 class MCPToolClient:
-    """A thin wrapper around one or more MCP servers: to add an integration,
-    add an entry to `servers`
-    Every call opens a fresh session inside the loop that made it, unless
-    one is being held open by `session()`
-    """
+    """A thin wrapper around one or more MCP servers: to add an integration, add
+    an entry to `servers`. Every call opens a fresh session inside the loop that
+    made it, unless one is being held open by `session()`"""
 
     def __init__(self, servers: dict):
         self._servers = servers
