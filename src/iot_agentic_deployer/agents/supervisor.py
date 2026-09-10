@@ -21,8 +21,10 @@ MAX_STAGES = 3
 
 AGENT_PURPOSE = {
     "Conceptualisation": "translates the description of the environment into the topology "
-                         "model and asks for what is missing. It also owns the building's "
-                         "name: naming or renaming it goes here, never anywhere else.",
+                         "model and asks for what is missing. It owns the spaces themselves: adding, "
+                         "removing or retyping a room goes here. It also owns the "
+                         "building's name: naming or renaming it goes here, never "
+                         "anywhere else.",
     "Configuration": "holds the device catalogue and answers what it offers, applies the "
                      "use-case profile, associates devices with spaces or access points, "
                      "models a door on a room that already exists, and sets which platform "
@@ -38,6 +40,11 @@ GUIDANCE = (
     "Stages of the activity: describe, rename or correct the building -> Conceptualisation; "
     "choose, add, remove or change the use case, the devices or the target platform "
     "-> Configuration; review -> Summary; "
+    "Creating, removing or retyping a space is Conceptualisation whatever verb is "
+    "used, 'add a technical room', 'the ground floor also has a corridor', "
+    "'Room 3 is actually a laboratory'. Configuration cannot create a space, it "
+    "only equips ones that already exist, so 'add a sensor to the technical room' "
+    "is Configuration and 'add a technical room' is not. "
     "Doors, entrances and passages belong to both: a description of the building that "
     "mentions them is Conceptualisation, but adding or removing one on rooms already "
     "modelled ('give every classroom a back door') is Configuration, which does it "

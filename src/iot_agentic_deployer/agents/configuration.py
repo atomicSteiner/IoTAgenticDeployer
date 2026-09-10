@@ -390,9 +390,17 @@ class ConfigurationNode:
             return {"messages": [AIMessage(content=(
                 f"[Configuration] No adapter for '{intent.platform}'. "
                 f"Available: {', '.join(available_platforms())}."))]}
+        previous = inst.target.platform
         inst.target.platform = intent.platform
-        return {"installation": inst.model_dump(), "messages": [AIMessage(content=(
+        result = {"installation": inst.model_dump(), "messages": [AIMessage(content=(
             f"[Configuration] Deployment target set to **{intent.platform}**."))]}
+        # op_ids come from the model and not from the platform, which is what lets
+        # an interrupted run resume. Left in place across a change of target, the
+        # plan of the old platform marks every operation of the new one completed
+        # and nothing is written, so a new target is a new plan
+        if intent.platform != previous:
+            result["deployment_plan"] = []
+        return result
 
     def _record_exclusion(self, inst, intent) -> dict:
         """A decision the architect actually took, written into the model
