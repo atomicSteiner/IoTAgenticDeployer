@@ -27,7 +27,7 @@ class IoTDeploymentState(TypedDict, total=False):
     validation_report: dict     # whatever the validation engine last said
     deployment_plan: list       # the operations, in the order they run
 
-    # Every hand-off and every tool call stays visible (R7).
+    # Every hand-off and every tool call stays visible.
     trace: Annotated[list, append]
 
     next_node: str
