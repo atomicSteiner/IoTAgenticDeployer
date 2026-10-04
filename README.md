@@ -1,7 +1,6 @@
 # IoT Agentic Deployer
 
-Artifact of the master's thesis *Agentic AI for the deployment and
-configuration of IoT infrastructures* (Damiano Buzzo).
+Artifact of the master's thesis *Support for the design and deployment of IoT scenarios through Agentic AI* (Damiano Buzzo).
 
 ## Scope of the project
 
