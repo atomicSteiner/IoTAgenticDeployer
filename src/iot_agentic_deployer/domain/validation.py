@@ -53,6 +53,8 @@ def check_topology(inst: Installation) -> list[Finding]:
 def _check_devices(inst: Installation) -> list[Finding]:
     findings = []
     catalog = load_device_catalog()
+    gateways = {device.instance_name for device in inst.all_devices()
+                if catalog.get(device.device_type_id, {}).get("category") in GATEWAY_CATEGORIES}
 
     for floor, space, access_point, device in inst.iter_devices():
         spec = catalog.get(device.device_type_id)
@@ -78,6 +80,16 @@ def _check_devices(inst: Installation) -> list[Finding]:
                 f"'{device.instance_name}' in {location} lacks required metadata: "
                 f"{', '.join(missing)}.",
                 "device_metadata_complete", space.name))
+
+        # Present is not enough: it has to name a gateway this installation
+        # has. A warning, since a device may report to one outside the model
+        gateway = device.metadata.get("gateway_id")
+        if gateway and gateway not in gateways:
+            findings.append(Finding(
+                "warning",
+                f"'{device.instance_name}' in {location} points at gateway "
+                f"'{gateway}', which is not in the installation.",
+                "device_gateway_known", space.name))
 
         # A device meant for an access point has to actually be on one
         if spec.get("installation_target") == "access_point" and access_point is None:

@@ -86,7 +86,8 @@ class ResponseNode:
     # -- the facts --------------------------------------------------------
 
     @staticmethod
-    def _facts(state: IoTDeploymentState, prose: list[str], steps: list[dict]) -> str:
+    def _facts(state: IoTDeploymentState, prose: list[str], steps: list[dict],
+               answered: list[str] = ()) -> str:
         """Everything true about this turn, and nothing else: whatever is
         missing here the model supplies on its own, plausibly and wrongly -
         platforms with no adapter, room types that do not exist"""
@@ -135,6 +136,13 @@ class ResponseNode:
             lines.append("What the agents reported, to be said again, not added to:")
             lines += [f"- {p}" for p in prose]
 
+        # Kept apart from the agents' reports: listed with them, 'noted' in an
+        # answer that changed nothing was reported back as work done
+        if answered:
+            lines.append("What the supervisor answered. Nothing in the model changed "
+                         "because of it, so none of it may be reported as done:")
+            lines += [f"- {a}" for a in answered]
+
         # What is still missing, never what to do about it: the move is the
         # one thing this agent is now left to work out for itself
         missing = missing_topology_information(inst)
@@ -145,7 +153,8 @@ class ResponseNode:
     # -- the reply --------------------------------------------------------
 
     def _compose(self, state: IoTDeploymentState, asked: Optional[HumanMessage],
-                 prose: list[str], steps: list[dict]) -> Optional[Reply]:
+                 prose: list[str], steps: list[dict],
+                 answered: list[str] = ()) -> Optional[Reply]:
         language = self._language(asked)
         try:
             return self.reply_llm.invoke([
@@ -162,7 +171,7 @@ class ResponseNode:
                     "to spaces; ask for a validation check; deploy, which shows a "
                     "plan and waits for confirmation.")},
                 {"role": "user", "content": f"They said: {asked.content if asked else ''}"},
-                {"role": "user", "content": self._facts(state, prose, steps)},
+                {"role": "user", "content": self._facts(state, prose, steps, answered)},
             ])
         except Exception:
             return None
@@ -179,9 +188,16 @@ class ResponseNode:
         if not spoken:
             return {}
 
-        prose, rendered = [], []
+        prose, answered, rendered = [], [], []
         for message in spoken:
             head, tail = self._split(message.content)
+            # The supervisor's answer is the model's from its first word to its
+            # last: a table in it looks like a rendering and is not one, and
+            # pasted under the reply it states a model the code never built
+            if message.content.startswith("[Supervisor]"):
+                if head:
+                    answered.append(head)
+                continue
             # Only what an agent reported, marked by its [Name] prefix: the
             # supervisor's hand-off line predates the work and misreports it
             if head.startswith("["):
@@ -199,7 +215,7 @@ class ResponseNode:
 
         reply = self._compose(state, next((m for m in reversed(messages)
                                            if isinstance(m, HumanMessage)), None),
-                              prose, steps)
+                              prose, steps, answered)
         if reply is None:
             # A failed reply is no reason to lose what the agents said: leave
             # the turn as it is and add the next step they would have got

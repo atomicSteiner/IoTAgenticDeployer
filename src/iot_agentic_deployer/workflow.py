@@ -8,6 +8,7 @@ import sqlite3
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from langfuse.langchain import CallbackHandler
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
@@ -60,6 +61,10 @@ class IoTAgenticWorkflow:
             api_key=os.getenv("OPENAI_API_KEY"),
             max_tokens=2048,
         )
+
+        # Tracing, only if Langfuse is configured. One handler on the graph
+        # reaches every node and every LLM call inside it
+        self.langfuse = CallbackHandler() if os.getenv("LANGFUSE_PUBLIC_KEY") else None
 
         # Where the configuration lives: keeps the model and its checkpoints
         # across steps, and across sessions.
@@ -119,11 +124,22 @@ class IoTAgenticWorkflow:
     def _config(self, session_id: str) -> dict:
         return {"configurable": {"thread_id": session_id}}
 
+    #the config a run gets: the session, plus tracing when there is any. Reads
+    #of the stored state keep the bare one and are not traced
+    def _run_config(self, session_id: str) -> dict:
+        config = self._config(session_id)
+        if self.langfuse:
+            config["callbacks"] = [self.langfuse]
+            # One trace per turn, all the turns of a session under one session
+            config["metadata"] = {"langfuse_session_id": session_id,
+                                  "langfuse_trace_name": "turn"}
+        return config
+
     #one full turn: feed the message in, let the graph run to a stop, return the last reply
     def run_turn(self, session_id: str, user_input: str, on_step=None) -> str:
         return self._drain(self.system.stream(
             {"messages": [HumanMessage(content=user_input)]},
-            config=self._config(session_id), stream_mode="values"), on_step)
+            config=self._run_config(session_id), stream_mode="values"), on_step)
 
     @staticmethod
     def _drain(events, on_step) -> str:
@@ -145,7 +161,7 @@ class IoTAgenticWorkflow:
     #answers the interrupt the deployment agent is waiting on, and lets the graph carry on
     def resume(self, session_id: str, value, on_step=None) -> str:
         return self._drain(self.system.stream(Command(resume=value),
-                                              config=self._config(session_id),
+                                              config=self._run_config(session_id),
                                               stream_mode="values"), on_step)
 
     #the payload of the interrupt waiting on the architect, if there is one

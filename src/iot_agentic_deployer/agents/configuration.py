@@ -10,7 +10,8 @@ from iot_agentic_deployer.domain.catalog.defaults import (
     device_instance_name, find_gateway, resolve_default_metadata,
 )
 from iot_agentic_deployer.domain.catalog.loader import (
-    load_device_catalog, load_use_cases, devices_for_use_case, profile_rules,
+    GATEWAY_CATEGORIES, load_device_catalog, load_use_cases, devices_for_use_case,
+    profile_rules,
 )
 from iot_agentic_deployer.domain.catalog.matching import match_device_types
 from iot_agentic_deployer.domain.models import AccessPoint, Installation, Exclusion, Device
@@ -449,25 +450,39 @@ class ConfigurationNode:
         def keep(device: Device) -> bool:
             return intent.device_type_id is not None and device.device_type_id != intent.device_type_id
 
-        removed = 0
+        taken = []
         # The same targeting as every other handler: removal was the one that
         # never read the floor, so one named floor emptied all of them
         for _floor, space in self._targeted(inst, intent):
-            kept = [d for d in space.devices if keep(d)]
-            removed += len(space.devices) - len(kept)
-            space.devices = kept
+            taken += [d for d in space.devices if not keep(d)]
+            space.devices = [d for d in space.devices if keep(d)]
 
             for ap in space.access_points:
-                kept_ap = [d for d in ap.devices if keep(d)]
-                removed += len(ap.devices) - len(kept_ap)
-                ap.devices = kept_ap
+                taken += [d for d in ap.devices if not keep(d)]
+                ap.devices = [d for d in ap.devices if keep(d)]
 
+        removed = len(taken)
         if removed == 0:
             return {"messages": [AIMessage(content="[Configuration] No matching devices to remove.")]}
 
+        # A gateway takes its bindings with it: the devices that pointed at it
+        # would otherwise keep a gateway_id naming nothing, and validation,
+        # which only asked whether the field was there, let them through
+        catalog = load_device_catalog()
+        gone = {d.instance_name for d in taken
+                if catalog.get(d.device_type_id, {}).get("category") in GATEWAY_CATEGORIES}
+        unbound = 0
+        for _f, _s, _ap, device in inst.iter_devices():
+            if device.metadata.get("gateway_id") in gone:
+                del device.metadata["gateway_id"]
+                unbound += 1
+
         scope = f" of type `{intent.device_type_id}`" if intent.device_type_id else ""
-        parts = [f"[Configuration] Removed {removed} device(s){scope}.",
-                 "\n" + installation_to_markdown(inst)]
+        parts = [f"[Configuration] Removed {removed} device(s){scope}."]
+        if unbound:
+            parts.append(f"{unbound} device(s) no longer have a gateway: they pointed "
+                         f"at the one removed.")
+        parts.append("\n" + installation_to_markdown(inst))
         return {"installation": inst.model_dump(), "messages": [AIMessage(content="\n".join(parts))]}
 
     def _ensure_gateway(self, inst) -> str | None:
